@@ -271,6 +271,24 @@ class FaissStore(VectorStore):
             )
         return hits
 
+    def vectors_for(self, ids: Sequence[str]) -> Embeddings:
+        """Read stored vectors back out of the index.
+
+        Both backends keep full vectors, so evaluation and benchmarking can
+        reuse them instead of decoding and re-encoding thousands of images
+        just to reproduce embeddings that are already on disk.
+        """
+        try:
+            positions = [self._id_positions[identifier] for identifier in ids]
+        except KeyError as exc:
+            msg = f"id {exc.args[0]!r} is not in this index"
+            raise KeyError(msg) from None
+
+        if not positions:
+            return np.zeros((0, self._dim), dtype=np.float32)
+        stacked = np.vstack([self._index.reconstruct(position) for position in positions])
+        return np.ascontiguousarray(stacked, dtype=np.float32)
+
     def get(self, identifier: str) -> SearchHit | None:
         """Look up a single indexed item by id."""
         position = self._id_positions.get(identifier)
