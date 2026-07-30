@@ -8,8 +8,12 @@
 # --- Data & generated artifacts (large, reproducible, never committed) ---
 data/
 artifacts/
-results/
 outputs/
+
+# Benchmark and evaluation output IS committed -- it is the evidence the
+# README's tables are built from. Only bulky intermediates are excluded.
+results/**/*.npy
+results/**/*.onnx
 *.npy
 *.npz
 *.faiss

@@ -370,6 +370,17 @@ def test_unknown_corpus_raises() -> None:
         get_corpus_spec("nope")
 
 
+def test_flickr30k_pins_the_parquet_conversion_branch() -> None:
+    """nlphuji/flickr30k ships a loading script, which datasets v3 refuses
+    with "Dataset scripts are no longer supported". The auto-converted parquet
+    branch has the same content and loads normally."""
+    assert get_corpus_spec("flickr30k").revision == "refs/convert/parquet"
+
+
+def test_fashion_needs_no_revision_pin() -> None:
+    assert get_corpus_spec("fashion").revision is None
+
+
 def test_flickr30k_declares_its_internal_split_column() -> None:
     """The whole dataset arrives as one Hub split; the real assignment is a
     column, and that is what makes the canonical benchmark reachable."""

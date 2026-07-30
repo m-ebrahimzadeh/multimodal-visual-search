@@ -41,7 +41,12 @@ dependencies = [
 onnx = [
     "onnx>=1.16",
     "onnxruntime>=1.19",
-    "optimum[onnxruntime]>=1.23",
+    # torch>=2.9 routes torch.onnx.export through the dynamo exporter, which
+    # requires onnxscript. Without it the export fails at import time.
+    "onnxscript>=0.5",
+    # Peak RSS for the benchmark table. A latency number without a memory
+    # number hides the actual reason to quantize on a 2-vCPU Space.
+    "psutil>=6.0",
 ]
 qdrant = ["qdrant-client>=1.11"]
 
@@ -60,6 +65,7 @@ dev = [
     "httpx>=0.27",
     "pandas-stubs>=2.2",
     "types-requests>=2.32",
+    "types-psutil>=6.0",
 ]
 
 [build-system]

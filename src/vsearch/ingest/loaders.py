@@ -36,6 +36,18 @@ class CorpusSpec:
     name: str
     hf_id: str
     split: str
+
+    revision: str | None = None
+    """Hub revision to load from.
+
+    Needed for script-based datasets: `datasets` v3 removed loading-script
+    support, so those repos now fail with "Dataset scripts are no longer
+    supported". The Hub keeps an auto-converted parquet export on the
+    ``refs/convert/parquet`` branch, which loads normally. (The dataset viewer
+    reads that same export, which is why such a repo looks fine on the web
+    while load_dataset fails.)
+    """
+
     image_column: str = "image"
     id_column: str | None = None
     """Column holding a stable id. ``None`` falls back to the row index."""
@@ -67,6 +79,9 @@ CORPORA: dict[str, CorpusSpec] = {
         # The entire dataset arrives as one Hub split named "test"; the real
         # train/val/test assignment lives in the `split` column below.
         split="test",
+        # nlphuji/flickr30k ships a loading script, which datasets v3 refuses.
+        # The auto-converted parquet branch has the same content and loads.
+        revision="refs/convert/parquet",
         id_column="img_id",
         payload_columns=("filename", "split"),
         text_columns=("filename",),
@@ -147,7 +162,13 @@ def iter_corpus(
     from datasets import load_dataset
 
     spec = get_corpus_spec(name)
-    dataset = load_dataset(spec.hf_id, split=spec.split, streaming=streaming, token=token)
+    dataset = load_dataset(
+        spec.hf_id,
+        split=spec.split,
+        revision=spec.revision,
+        streaming=streaming,
+        token=token,
+    )
 
     if split_filter is not None:
         if spec.split_column is None:
