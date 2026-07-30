@@ -231,11 +231,26 @@ uv run python -m vsearch.eval.run_eval --corpus fashion --encoder clip --encoder
 The seed is fixed, so the interval is reproducible: a confidence bound that moves between runs of
 the same data is not evidence anyone can check.
 
-Reproduce everything above from a clean checkout — roughly 15 minutes on a laptop CPU, no GPU:
+### Reproducing both tables
+
+From a clean checkout, on a laptop CPU, no GPU — roughly 15 minutes end to end:
 
 ```bash
 uv run vsearch ingest --corpus flickr1k --encoder clip --shard-size 250
 ```
+
+```bash
+uv run vsearch ingest --corpus fashion --encoder clip --limit 96 --shard-size 48 --streaming
+```
+
+```bash
+uv run vsearch ingest --corpus fashion --encoder dinov3 --limit 96 --shard-size 48 --streaming
+```
+
+Then the two eval commands above. Raw output lands in `results/`, named per corpus and protocol
+(`metrics-flickr1k-text.md`, `metrics-fashion-image.md`, `metrics-fashion-image-comparison.md`) —
+one shared `metrics.md` was last-write-wins, so running one protocol quietly erased the other's
+evidence.
 
 ---
 
