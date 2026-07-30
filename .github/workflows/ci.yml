@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep model downloads out of the test path; anything needing weights is
+  # marked `slow` and deselected below.
+  HF_HUB_DISABLE_TELEMETRY: "1"
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # Resolves torch from the CPU index on Linux (see [tool.uv.sources]),
+      # which keeps this step at ~200 MB instead of pulling ~2.5 GB of CUDA.
+      - name: Install dependencies
+        run: uv sync --all-extras --group dev
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy src
+
+      - name: Test
+        run: uv run pytest -m "not slow" --cov=vsearch --cov-report=term-missing
