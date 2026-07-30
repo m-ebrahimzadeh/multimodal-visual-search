@@ -88,10 +88,22 @@ class IndexHandle:
         return self._encoder
 
     def thumbnail_for(self, identifier: str) -> Path | None:
+        """Resolve an item's thumbnail, refusing anything outside images_dir.
+
+        The id reaches this method from an HTTP path parameter once the API
+        serves thumbnails, so an id like "../../../.env" must not escape the
+        directory. Containment is checked here rather than at the route, so a
+        future caller cannot reintroduce the hole.
+        """
         if self.images_dir is None:
             return None
-        candidate = self.images_dir / f"{identifier}.jpg"
-        return candidate if candidate.exists() else None
+
+        root = self.images_dir.resolve()
+        candidate = (root / f"{identifier}.jpg").resolve()
+        if not candidate.is_relative_to(root):
+            logger.warning("Refused thumbnail path escaping the images dir: %r", identifier)
+            return None
+        return candidate if candidate.is_file() else None
 
 
 class SearchService:
@@ -138,6 +150,28 @@ class SearchService:
             available = ", ".join(self.encoders)
             msg = f"no index loaded for encoder {encoder!r}; loaded: {available}"
             raise IndexNotLoadedError(msg) from None
+
+    def warmup(self, encoders: Sequence[str] | None = None) -> list[str]:
+        """Load backbones now rather than on a user's first query.
+
+        Encoders load lazily to keep memory and startup honest, but that puts
+        a multi-second model load on whoever queries first -- on a public demo
+        that is the recruiter. Startup time is invisible; a slow first click
+        is not. Returns the encoders actually warmed.
+        """
+        targets = list(encoders) if encoders is not None else self.encoders
+        warmed: list[str] = []
+        for name in targets:
+            try:
+                self.handle(name).resolve_encoder(
+                    device=self._device, batch_size=self._batch_size, token=self._token
+                )
+            except (IndexNotLoadedError, OSError) as exc:
+                # A cold demo is better than no demo: log and carry on.
+                logger.warning("Could not warm up encoder %r: %s", name, exc)
+                continue
+            warmed.append(name)
+        return warmed
 
     def facets(self, encoder: str | None = None) -> dict[str, list[Any]]:
         """Facet values for populating filter dropdowns."""
@@ -189,10 +223,14 @@ class SearchService:
             raise TextNotSupportedError(msg)
 
         handle = self.handle(name)
-        started = time.perf_counter()
-        vector = handle.resolve_encoder(
+        backbone = handle.resolve_encoder(
             device=self._device, batch_size=self._batch_size, token=self._token
-        ).encode_text([query])
+        )
+        # Timed after the encoder is resolved: on a cold service that call
+        # loads model weights, and folding a one-off multi-second load into
+        # "query latency" would misreport it everywhere it is shown.
+        started = time.perf_counter()
+        vector = backbone.encode_text([query])
         hits = handle.store.search(vector, k=k, where=where)[0]
         return self._respond(hits, handle, started)
 
@@ -211,15 +249,15 @@ class SearchService:
         fusion. Fused scores are RRF scores, not cosines, and are only
         comparable within the returned list.
         """
-        started = time.perf_counter()
-
         if fuse:
-            return self._search_image_fused(image, k=k, encoders=fuse, where=where, started=started)
+            return self._search_image_fused(image, k=k, encoders=fuse, where=where)
 
         handle = self.handle(encoder or self._default_image)
-        vector = handle.resolve_encoder(
+        backbone = handle.resolve_encoder(
             device=self._device, batch_size=self._batch_size, token=self._token
-        ).encode_image([image])
+        )
+        started = time.perf_counter()
+        vector = backbone.encode_image([image])
         hits = handle.store.search(vector, k=k, where=where)[0]
         return self._respond(hits, handle, started)
 
@@ -230,14 +268,22 @@ class SearchService:
         k: int,
         encoders: Sequence[str],
         where: Filter | None,
-        started: float,
     ) -> SearchResponse:
+        # Resolve every backbone before timing, for the reason in search_text.
+        backbones = [
+            (
+                self.handle(name),
+                self.handle(name).resolve_encoder(
+                    device=self._device, batch_size=self._batch_size, token=self._token
+                ),
+            )
+            for name in encoders
+        ]
+
+        started = time.perf_counter()
         rankings: list[list[SearchHit]] = []
-        for name in encoders:
-            handle = self.handle(name)
-            vector = handle.resolve_encoder(
-                device=self._device, batch_size=self._batch_size, token=self._token
-            ).encode_image([image])
+        for handle, backbone in backbones:
+            vector = backbone.encode_image([image])
             # Over-retrieve per encoder: fusion needs depth to find the
             # agreements that make it better than either list alone.
             rankings.append(handle.store.search(vector, k=k * 2, where=where)[0])

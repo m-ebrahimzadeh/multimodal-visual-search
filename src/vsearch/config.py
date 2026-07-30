@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     text_encoder: str = Field(default="clip", description="Encoder for text->image search.")
     image_encoder: str = Field(default="dinov3", description="Encoder for image->image search.")
 
+    # --- Corpus ------------------------------------------------------------
+    default_corpus: str = Field(
+        default="fashion", description="Corpus the API and UI serve by default."
+    )
+    warmup_on_start: bool = Field(
+        default=True,
+        description="Load encoders at startup so the first user query is not slowed by it.",
+    )
+
     # --- Retrieval ---------------------------------------------------------
     index_backend: Literal["flat", "hnsw"] = "flat"
     top_k: int = Field(default=24, ge=1, le=500)

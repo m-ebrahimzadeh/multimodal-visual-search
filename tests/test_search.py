@@ -216,6 +216,32 @@ def test_facets_list_values_for_dropdowns() -> None:
     assert sorted(facets["colour"]) == ["Blue", "Red"]
 
 
+def test_warmup_reports_which_encoders_loaded() -> None:
+    assert _service().warmup() == ["clip", "dinov3"]
+
+
+def test_warmup_survives_an_encoder_that_will_not_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cold demo beats no demo, so a failed warmup must not abort startup."""
+    service = _service()
+    broken = service.handle("dinov3")
+    broken._encoder = None
+    monkeypatch.setattr(
+        type(broken),
+        "resolve_encoder",
+        lambda self, **kwargs: (_ for _ in ()).throw(OSError("weights unreachable")),
+    )
+    assert service.warmup() == []
+
+
+def test_took_ms_excludes_model_loading() -> None:
+    """Timing starts after the encoder resolves, so a cold load is not
+    reported as query latency."""
+    response = _service().search_text("abc", k=2)
+    assert response.took_ms < 1000
+
+
 def test_stats_report_index_shape() -> None:
     stats = _service().stats()
     assert stats["text_encoders"] == ["clip"]
