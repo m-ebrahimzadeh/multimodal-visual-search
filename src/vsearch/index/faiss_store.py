@@ -51,6 +51,7 @@ class FaissStore(VectorStore):
         hnsw_m: int = 32,
         ef_construction: int = 200,
         ef_search: int = 64,
+        facet_exclude: Iterable[str] = (),
     ) -> None:
         import faiss
 
@@ -64,6 +65,11 @@ class FaissStore(VectorStore):
         self._hnsw_m = hnsw_m
         self._ef_construction = ef_construction
         self._ef_search = ef_search
+        # Fields stored on hits but kept out of the inverted index. Free-text
+        # columns (a product name, a filename) are near-unique, so faceting
+        # them would build one singleton set per row -- tens of thousands of
+        # dict entries that no filter can usefully target.
+        self._facet_exclude = frozenset(facet_exclude)
 
         self._index = self._new_index()
         self._ids: list[str] = []
@@ -160,6 +166,8 @@ class FaissStore(VectorStore):
         are free text, not facets.
         """
         for key, value in payload.items():
+            if key in self._facet_exclude:
+                continue
             # bool is a subclass of int, so it is covered. None is excluded:
             # "missing" is not a facet worth filtering on.
             if not isinstance(value, str | int | float):
@@ -287,6 +295,7 @@ class FaissStore(VectorStore):
             "hnsw_m": self._hnsw_m,
             "ef_construction": self._ef_construction,
             "ef_search": self._ef_search,
+            "facet_exclude": sorted(self._facet_exclude),
             "count": len(self._ids),
         }
         (directory / CONFIG_FILENAME).write_text(json.dumps(config, indent=2), encoding="utf-8")
@@ -307,6 +316,7 @@ class FaissStore(VectorStore):
             hnsw_m=int(config.get("hnsw_m", 32)),
             ef_construction=int(config.get("ef_construction", 200)),
             ef_search=int(config.get("ef_search", 64)),
+            facet_exclude=config.get("facet_exclude", ()),
         )
         store._index = faiss.read_index(str(directory / INDEX_FILENAME))
 

@@ -34,8 +34,13 @@ class MultimodalEncoder(BaseEncoder):
 
         self._torch = torch
         # transformers ships py.typed but leaves the Auto* factories untyped.
+        # use_fast selects the torchvision image processor over the PIL one --
+        # materially quicker for batch preprocessing, which is a real share of
+        # ingest wall-clock. Set here so ingest and query preprocess alike;
+        # mixing the two would put a small systematic offset between indexed
+        # and query vectors.
         self._processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call]
-            spec.model_id, token=token
+            spec.model_id, token=token, use_fast=True
         )
         model = AutoModel.from_pretrained(spec.model_id, token=token)
         # eval() disables dropout. Without it, repeated calls return slightly

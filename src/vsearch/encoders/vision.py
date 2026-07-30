@@ -35,8 +35,10 @@ class VisionEncoder(BaseEncoder):
 
         self._torch = torch
         # transformers ships py.typed but leaves the Auto* factories untyped.
+        # use_fast picks the torchvision processor over the PIL one; see the
+        # note in multimodal.py on why it is set at construction.
         self._processor = AutoImageProcessor.from_pretrained(  # type: ignore[no-untyped-call]
-            spec.model_id, token=token
+            spec.model_id, token=token, use_fast=True
         )
         model = AutoModel.from_pretrained(spec.model_id, token=token)
         self._model = model.eval().to(device)
