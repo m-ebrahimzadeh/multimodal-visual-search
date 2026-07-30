@@ -118,6 +118,9 @@ ignore = [
 # rendered UI hierarchy. Collapsing them (SIM117) is functionally equivalent but
 # flattens the structure that makes the file readable.
 "src/vsearch/ui/app.py" = ["SIM117"]
+# Notebook cells are shell invocations; wrapping a CLI command across lines to
+# satisfy a line limit makes it harder to copy and run.
+"notebooks/*.ipynb" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"
