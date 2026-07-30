@@ -18,7 +18,7 @@ uv sync --all-extras --group dev && uv run vsearch info
 
 | | |
 |---|---|
-| **Text → image** | CLIP / SigLIP2 shared embedding space |
+| **Text → image** | CLIP / SigLIP2 shared embedding space — **0.588 R@1** on Flickr30k 1K test |
 | **Image → image** | DINOv3 self-supervised features, or fused with CLIP via reciprocal rank fusion |
 | **Filtering** | Facet pre-filtering *inside* the FAISS search (colour, category, gender, season…) |
 | **Serving** | FastAPI + Gradio in one process, ~45 ms/query on a laptop CPU |
@@ -85,14 +85,20 @@ encoders' scores stay comparable.
 
 ## Corpora
 
-| Role | Dataset | Size |
-|---|---|---|
-| Demo | [`benitomartin/fashion-product-images-small-384x512`](https://huggingface.co/datasets/benitomartin/fashion-product-images-small-384x512) | 44,072 @ 384×512, 8 facets |
-| Evaluation | [`nlphuji/flickr30k`](https://huggingface.co/datasets/nlphuji/flickr30k) | 31,014 images, 5 captions each |
+| Role | Corpus | Dataset | Size |
+|---|---|---|---|
+| Demo | `fashion` | [`benitomartin/fashion-product-images-small-384x512`](https://huggingface.co/datasets/benitomartin/fashion-product-images-small-384x512) | 44,072 @ 384×512, 8 facets |
+| Evaluation | `flickr1k` | [`nlphuji/flickr_1k_test_image_text_retrieval`](https://huggingface.co/datasets/nlphuji/flickr_1k_test_image_text_retrieval) | 1,000 images, 5 captions each — **142 MB** |
+| Evaluation (full) | `flickr30k` | [`nlphuji/flickr30k`](https://huggingface.co/datasets/nlphuji/flickr30k) | 31,014 images — 4.31 GB |
 
 Flickr30k carries the canonical train/val/test assignment, so restricting to `test` gives the
 standard 1000-image / 5000-caption benchmark whose Recall@k is comparable to published CLIP numbers
 rather than self-defined.
+
+That assignment lives in a *column*, not in separate files, so reaching those 1000 images through
+the full corpus means streaming all 4.31 GB to keep 3 % of it. The same 1000 images are published
+standalone at 142 MB, so `flickr1k` is the default evaluation path — identical benchmark, 30× less
+transfer, and it runs on a laptop instead of needing a GPU box.
 
 ---
 
@@ -146,6 +152,36 @@ uv run python -m vsearch.bench.run_bench --encoder clip --batch 1 --batch 8 --ru
 
 ## Retrieval quality
 
+### Text → image, Flickr30k 1K test (the headline)
+
+The canonical benchmark: 1000 images, 5000 human-written captions, one correct image per caption.
+
+| config | queries | R@1 | R@5 | R@10 | MRR | nDCG@10 |
+|---|---|---|---|---|---|---|
+| clip / flickr1k / text→image | 5000 | **0.588** | 0.834 | 0.901 | 0.693 | 0.743 |
+| clip / flickr1k / text→image **(shuffled control)** | 5000 | 0.0018 | 0.0064 | 0.0108 | 0.004 | 0.006 |
+
+The second row is a **negative control**, and it is the reason to believe the first. It reassigns
+every caption to the wrong image and changes nothing else — same encoder, same index, same search,
+same metric code — then reports what the pipeline scores on destroyed ground truth. Chance is
+1/1000 = 0.0010; it lands at 0.0018.
+
+That matters because the failure mode of a retrieval harness is not a crash. A harness that scores
+a query against itself, or lines ranked lists up against the wrong targets, produces a *high* number
+and looks like a good result. Only the control separates "the model retrieves" from "the evaluation
+leaks".
+
+For calibration: ~30 % R@1 is the figure usually quoted for CLIP ViT-B/32 zero-shot text→image, but
+that is **MS-COCO 5K** — a 5× larger candidate pool with terser captions. Flickr30k 1K is the easier
+benchmark, so a substantially higher number is expected here, and 0.588 against a 0.0018 control is
+consistent rather than suspicious.
+
+```bash
+uv run python -m vsearch.eval.run_eval --corpus flickr1k --encoder clip --protocol text --control
+```
+
+### Image → image, product corpus
+
 Image→image on the product corpus. Relevance is a **documented proxy**: two products match when
 they share `articleType` *and* `baseColour`. This is not human judgement, and the table says so.
 
@@ -195,11 +231,10 @@ uv run python -m vsearch.eval.run_eval --corpus fashion --encoder clip --encoder
 The seed is fixed, so the interval is reproducible: a confidence bound that moves between runs of
 the same data is not evidence anyone can check.
 
-**Text→image Recall@k on the Flickr30k 1000-image test split is not yet measured.** It needs the
-full corpus ingested; run it on Colab (see `notebooks/`) and then:
+Reproduce everything above from a clean checkout — roughly 15 minutes on a laptop CPU, no GPU:
 
 ```bash
-uv run python -m vsearch.eval.run_eval --corpus flickr30k --encoder clip --split test --k 10
+uv run vsearch ingest --corpus flickr1k --encoder clip --shard-size 250
 ```
 
 ---
@@ -248,8 +283,9 @@ to a Hub dataset repo, and point a Docker Space at it with `VSEARCH_ARTIFACT_REP
 
 Stated rather than buried:
 
-- **Text→image Recall@k is unmeasured** (see above). The harness is tested; the headline number is
-  not yet produced.
+- **Text→image is measured on 1000 images, not 31,014.** That is the canonical benchmark split, so
+  the number is comparable to published work — but a larger index is a harder retrieval problem and
+  Recall@k would fall. This is not a 31k-corpus result.
 - **The image→image relevance signal is a label proxy**, not human judgement.
 - **The encoder comparison is underpowered.** 39 scoreable queries cannot separate CLIP from DINOv3;
   every interval straddles zero. That is reported as "no measurable difference" rather than dressed
@@ -275,7 +311,7 @@ Stated rather than buried:
 uv run ruff check . && uv run mypy src && uv run pytest -m "not slow"
 ```
 
-246 fast tests, plus 7 marked `slow` that download real checkpoints (run with `-m slow`). CI runs
+251 fast tests, plus 7 marked `slow` that download real checkpoints (run with `-m slow`). CI runs
 lint, format, strict types and the fast suite, then builds the Docker image and boots it to confirm
 `/health` answers.
 

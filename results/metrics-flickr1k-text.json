@@ -1,0 +1,60 @@
+{
+  "runs": [
+    {
+      "corpus": "flickr1k",
+      "encoder": "clip",
+      "model_id": "openai/clip-vit-base-patch32",
+      "protocol": "text->image",
+      "device": "cpu",
+      "k": 10,
+      "metrics": {
+        "queries": 5000,
+        "recall": {
+          "1": 0.5878,
+          "5": 0.8342,
+          "10": 0.9006
+        },
+        "precision": {
+          "1": 0.5878,
+          "5": 0.16684000000000002,
+          "10": 0.09006
+        },
+        "mrr": 0.6925290476190477,
+        "map": 0.6925290476190477,
+        "ndcg": {
+          "1": 0.5878,
+          "5": 0.7213215162312077,
+          "10": 0.7429171469585449
+        }
+      }
+    },
+    {
+      "corpus": "flickr1k",
+      "encoder": "clip",
+      "model_id": "openai/clip-vit-base-patch32",
+      "protocol": "text->image (shuffled control)",
+      "device": "cpu",
+      "k": 10,
+      "metrics": {
+        "queries": 5000,
+        "recall": {
+          "1": 0.0018,
+          "5": 0.0064,
+          "10": 0.0108
+        },
+        "precision": {
+          "1": 0.0018,
+          "5": 0.00128,
+          "10": 0.00108
+        },
+        "mrr": 0.004001587301587301,
+        "map": 0.004001587301587301,
+        "ndcg": {
+          "1": 0.0018,
+          "5": 0.004170732422072099,
+          "10": 0.0055711126513746205
+        }
+      }
+    }
+  ]
+}

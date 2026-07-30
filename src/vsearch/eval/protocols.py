@@ -20,6 +20,7 @@ evidence:
 from __future__ import annotations
 
 import logging
+import random
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -73,6 +74,26 @@ def flickr_text_queries(
         if max_queries is not None and len(queries) >= max_queries:
             break
     return queries[:max_queries] if max_queries is not None else queries
+
+
+def shuffled_queries(queries: Sequence[TextQuery], *, seed: int = 0) -> list[TextQuery]:
+    """The same captions, reassigned to the wrong images.
+
+    A negative control. Every other moving part -- encoder, index, search,
+    metric code -- is unchanged; only the ground truth is destroyed. A correct
+    harness must then score at chance (``1/|corpus|``).
+
+    This is what separates "the model retrieves well" from "the evaluation
+    leaks": a harness that accidentally scores the query against itself, or
+    lines up ranked lists with the wrong targets, still looks excellent on the
+    real assignment and only betrays itself here.
+    """
+    targets = [query.target_id for query in queries]
+    random.Random(seed).shuffle(targets)
+    return [
+        TextQuery(text=query.text, target_id=target)
+        for query, target in zip(queries, targets, strict=True)
+    ]
 
 
 def _relevance_key(payload: Any) -> tuple[Any, ...] | None:

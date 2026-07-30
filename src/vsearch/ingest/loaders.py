@@ -89,6 +89,25 @@ CORPORA: dict[str, CorpusSpec] = {
         split_column="split",
         description="31k images with five captions each; canonical retrieval benchmark.",
     ),
+    "flickr1k": CorpusSpec(
+        name="flickr1k",
+        # The same 1000 images as flickr30k's `split == "test"` rows, published
+        # standalone. The full corpus spreads that split across 4.31 GB of
+        # parquet, so reaching it by filtering means downloading essentially
+        # everything to keep 3% of it; this export is 142 MB. Identical
+        # benchmark, identical schema, 30x less transfer.
+        hf_id="nlphuji/flickr_1k_test_image_text_retrieval",
+        split="test",
+        revision="refs/convert/parquet",
+        # `imgid` is a list of five repeated ids (one per caption), so it
+        # cannot key a row. `filename` is unique per image.
+        id_column="filename",
+        payload_columns=("filename", "split"),
+        text_columns=("filename",),
+        caption_column="caption",
+        split_column="split",
+        description="Canonical Flickr30k 1K test split: 1000 images, 5 captions each.",
+    ),
     "fashion": CorpusSpec(
         name="fashion",
         hf_id="benitomartin/fashion-product-images-small-384x512",

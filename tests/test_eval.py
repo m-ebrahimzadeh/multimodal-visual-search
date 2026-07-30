@@ -13,6 +13,7 @@ import pytest
 from vsearch.encoders.base import l2_normalize
 from vsearch.eval import (
     Judged,
+    TextQuery,
     average_precision,
     evaluate,
     evaluate_image_to_image,
@@ -24,6 +25,7 @@ from vsearch.eval import (
     precision_at_k,
     recall_at_k,
     reciprocal_rank,
+    shuffled_queries,
     to_markdown_table,
 )
 from vsearch.eval.compare import Comparison
@@ -375,6 +377,34 @@ def test_comparison_table_shows_the_interval() -> None:
     assert "+0.1000" in table
     assert "[-0.1000, +0.3000]" in table
     assert "within noise" in table
+
+
+def test_shuffled_control_preserves_captions_and_targets() -> None:
+    """Only the pairing may change.
+
+    Dropping or inventing a target would make the control score differently
+    for reasons unrelated to the pairing, which is the one thing it tests.
+    """
+    queries = [TextQuery(text=f"caption {i}", target_id=f"img-{i}") for i in range(50)]
+    shuffled = shuffled_queries(queries)
+
+    assert [q.text for q in shuffled] == [q.text for q in queries]
+    assert sorted(q.target_id for q in shuffled) == sorted(q.target_id for q in queries)
+
+
+def test_shuffled_control_actually_breaks_the_pairing() -> None:
+    """A permutation that happened to be the identity would silently pass."""
+    queries = [TextQuery(text=f"caption {i}", target_id=f"img-{i}") for i in range(50)]
+    shuffled = shuffled_queries(queries)
+
+    moved = sum(a.target_id != b.target_id for a, b in zip(queries, shuffled, strict=True))
+    assert moved > len(queries) // 2
+
+
+def test_shuffled_control_is_reproducible() -> None:
+    queries = [TextQuery(text=f"caption {i}", target_id=f"img-{i}") for i in range(20)]
+    assert shuffled_queries(queries, seed=7) == shuffled_queries(queries, seed=7)
+    assert shuffled_queries(queries, seed=7) != shuffled_queries(queries, seed=8)
 
 
 def test_image_to_image_pairs_key_on_the_query_id() -> None:

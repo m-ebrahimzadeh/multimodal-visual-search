@@ -362,7 +362,7 @@ def test_shard_embeddings_are_normalized(tmp_path: Path, monkeypatch: pytest.Mon
 
 
 def test_available_corpora() -> None:
-    assert available_corpora() == ["fashion", "flickr30k"]
+    assert available_corpora() == ["fashion", "flickr1k", "flickr30k"]
 
 
 def test_unknown_corpus_raises() -> None:
@@ -388,6 +388,30 @@ def test_flickr30k_declares_its_internal_split_column() -> None:
     assert spec.split == "test"
     assert spec.split_column == "split"
     assert spec.caption_column == "caption"
+
+
+def test_flickr1k_matches_the_flickr30k_eval_contract() -> None:
+    """The 1K export must be interchangeable with flickr30k's test split.
+
+    It is a different repo, so the columns the eval depends on -- captions and
+    the split marker -- have to line up, or the "canonical benchmark" claim is
+    only true of one of them.
+    """
+    small = get_corpus_spec("flickr1k")
+    full = get_corpus_spec("flickr30k")
+
+    assert small.caption_column == full.caption_column
+    assert small.split_column == full.split_column
+    assert small.split == "test"
+
+
+def test_flickr1k_does_not_key_rows_on_a_list_column() -> None:
+    """`imgid` holds five repeated ids (one per caption) and cannot be an id.
+
+    Keying on it would stringify a list into every record id, which fails
+    quietly: the ingest still runs and the index still builds.
+    """
+    assert get_corpus_spec("flickr1k").id_column == "filename"
 
 
 def test_fashion_declares_the_filter_facets() -> None:

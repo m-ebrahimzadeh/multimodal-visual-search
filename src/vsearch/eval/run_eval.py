@@ -24,6 +24,7 @@ from vsearch.eval.protocols import (
     evaluate_text_to_image,
     flickr_text_queries,
     image_to_image_pairs,
+    shuffled_queries,
 )
 from vsearch.eval.retrieval import DEFAULT_KS, Judged, RetrievalMetrics, evaluate, to_markdown_table
 from vsearch.index import FaissStore
@@ -68,8 +69,14 @@ def run_text_to_image(
     split: str | None = "test",
     max_queries: int | None = None,
     device: str | None = None,
+    shuffle_control: bool = False,
 ) -> EvalRun:
-    """Evaluate text->image retrieval against caption ground truth."""
+    """Evaluate text->image retrieval against caption ground truth.
+
+    ``shuffle_control`` reassigns each caption to the wrong image. It is the
+    negative control: the result must land at chance, and a headline Recall@k
+    means little without it.
+    """
     store = FaissStore.load(artifacts_dir / f"{corpus}__{encoder_name}" / "index")
     queries = flickr_text_queries(store, split=split, max_queries=max_queries)
     if not queries:
@@ -85,12 +92,16 @@ def run_text_to_image(
     encoder = load_encoder(encoder_name, device=device, allow_fallback=False)
     logger.info("Scoring %d captions against %d images", len(queries), len(store))
 
+    if shuffle_control:
+        queries = shuffled_queries(queries)
+        logger.info("Shuffled control: expect Recall@1 near chance (%.4f)", 1 / len(store))
+
     metrics = evaluate(evaluate_text_to_image(store, encoder, queries, k=k))
     return EvalRun(
         corpus=corpus,
         encoder=encoder_name,
         model_id=encoder.spec.model_id,
-        protocol="text->image",
+        protocol="text->image (shuffled control)" if shuffle_control else "text->image",
         device=encoder.device,
         k=k,
         metrics=metrics,
@@ -180,23 +191,29 @@ def write_results(
     ks: tuple[int, ...] = DEFAULT_KS,
     comparisons: list[Comparison] | None = None,
     comparison_labels: tuple[str, str] | None = None,
+    stem: str = "metrics",
 ) -> Path:
-    """Persist metrics as JSON and a markdown table."""
+    """Persist metrics as JSON and a markdown table.
+
+    ``stem`` names the output per corpus and protocol. A single ``metrics.md``
+    is last-write-wins, so evaluating text->image would quietly replace the
+    image->image evidence and leave results/ disagreeing with the README.
+    """
     results_dir.mkdir(parents=True, exist_ok=True)
 
     payload: dict[str, Any] = {"runs": [run.to_dict() for run in runs]}
     if comparisons:
         payload["comparison"] = [item.to_dict() for item in comparisons]
-    json_path = results_dir / "metrics.json"
+    json_path = results_dir / f"{stem}.json"
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     rows = {run.label: run.metrics.summary_row(ks) for run in runs}
     table = to_markdown_table(rows, ks)
-    (results_dir / "metrics.md").write_text(table + "\n", encoding="utf-8")
+    (results_dir / f"{stem}.md").write_text(table + "\n", encoding="utf-8")
 
     if comparisons and comparison_labels:
         baseline_label, candidate_label = comparison_labels
-        (results_dir / "comparison.md").write_text(
+        (results_dir / f"{stem}-comparison.md").write_text(
             comparison_table(
                 comparisons,
                 baseline_label=baseline_label,
@@ -206,7 +223,7 @@ def write_results(
             encoding="utf-8",
         )
 
-    logger.info("Wrote %s and metrics.md", json_path)
+    logger.info("Wrote %s and %s.md", json_path, stem)
     return json_path
 
 
@@ -226,6 +243,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Paired bootstrap between two --encoder values (image protocol).",
     )
+    parser.add_argument(
+        "--control",
+        action="store_true",
+        help="Also score with captions shuffled onto wrong images; must land at chance.",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -236,17 +258,21 @@ def main(argv: list[str] | None = None) -> int:
     runs: list[EvalRun] = []
     for encoder_name in encoders:
         if args.protocol == "text":
-            runs.append(
-                run_text_to_image(
-                    settings.artifacts_dir,
-                    args.corpus,
-                    encoder_name,
-                    k=args.k,
-                    split=split,
-                    max_queries=args.max_queries,
-                    device=args.device,
+            # The control runs second so the table reads "here is the result,
+            # here is what the same pipeline scores on destroyed ground truth".
+            for control in (False, True) if args.control else (False,):
+                runs.append(
+                    run_text_to_image(
+                        settings.artifacts_dir,
+                        args.corpus,
+                        encoder_name,
+                        k=args.k,
+                        split=split,
+                        max_queries=args.max_queries,
+                        device=args.device,
+                        shuffle_control=control,
+                    )
                 )
-            )
         else:
             runs.append(
                 run_image_to_image(
@@ -274,7 +300,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         labels = (encoders[0], encoders[1])
 
-    write_results(runs, settings.results_dir, comparisons=comparisons, comparison_labels=labels)
+    write_results(
+        runs,
+        settings.results_dir,
+        comparisons=comparisons,
+        comparison_labels=labels,
+        stem=f"metrics-{args.corpus}-{args.protocol}",
+    )
     print(to_markdown_table({run.label: run.metrics.summary_row() for run in runs}, DEFAULT_KS))
     if comparisons and labels:
         print()

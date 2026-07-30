@@ -13,6 +13,7 @@ from vsearch.eval.protocols import (
     flickr_text_queries,
     image_to_image_pairs,
     label_relevance_groups,
+    shuffled_queries,
     text_to_image_pairs,
 )
 from vsearch.eval.retrieval import (
@@ -48,6 +49,7 @@ __all__ = [
     "precision_at_k",
     "recall_at_k",
     "reciprocal_rank",
+    "shuffled_queries",
     "text_to_image_pairs",
     "to_markdown_table",
 ]
