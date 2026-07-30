@@ -42,13 +42,22 @@ class AppState:
     service: SearchService | None = None
     error: str | None = None
     corpus: str = ""
+    initialized: bool = False
 
 
 state = AppState()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+def initialize() -> AppState:
+    """Load the search service once.
+
+    Idempotent because there are two callers with different timing needs: the
+    ASGI lifespan (API-only runs) and the combined entry point, which must
+    have the service *before* startup in order to mount the UI's routes.
+    """
+    if state.initialized:
+        return state
+
     settings = get_settings()
     state.corpus = settings.default_corpus
     try:
@@ -69,6 +78,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         state.service = None
         state.error = str(exc)
         logger.warning("Starting without an index: %s", exc)
+
+    state.initialized = True
+    return state
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    initialize()
     yield
 
 
@@ -204,11 +221,29 @@ def thumbnail(encoder: str, item_id: str, service: ServiceDep) -> FileResponse:
     return FileResponse(path, media_type="image/jpeg")
 
 
-@app.get("/", include_in_schema=False)
+@app.get("/api", include_in_schema=False)
 def root() -> dict[str, Any]:
+    """Service metadata. The UI owns "/" when it is mounted."""
     return {
         "name": "vsearch",
         "version": __version__,
         "docs": "/docs",
         "health": "/health",
+        "ui": "/",
     }
+
+
+def attach_ui() -> FastAPI:
+    """Load the service and mount the Gradio UI at "/".
+
+    Gradio is imported here rather than at module scope so the API, eval and
+    benchmark entry points never pay for it.
+    """
+    initialize()
+    if state.service is None:
+        logger.warning("No index loaded; serving the API without a UI.")
+        return app
+
+    from vsearch.ui import mount_ui
+
+    return mount_ui(app, state.service, path="/")

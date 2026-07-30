@@ -97,9 +97,11 @@ def _png(colour: tuple[int, int, int] = (200, 30, 30)) -> bytes:
 # --- meta ------------------------------------------------------------------
 
 
-def test_root_points_at_the_docs(client: TestClient) -> None:
-    body = client.get("/").json()
+def test_api_metadata_points_at_the_docs(client: TestClient) -> None:
+    """ "/" belongs to the UI once mounted, so metadata lives at /api."""
+    body = client.get("/api").json()
     assert body["docs"] == "/docs"
+    assert body["ui"] == "/"
 
 
 def test_health_reports_loaded_indexes(client: TestClient) -> None:

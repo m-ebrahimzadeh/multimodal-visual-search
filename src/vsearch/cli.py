@@ -162,6 +162,21 @@ def ingest(
 
 
 @app.command()
+def serve(
+    host: Annotated[str, typer.Option(help="Bind address.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Port to listen on.")] = 7860,
+    api_only: Annotated[bool, typer.Option(help="Skip the Gradio UI.")] = False,
+    reload: Annotated[bool, typer.Option(help="Reload on code changes.")] = False,
+) -> None:
+    """Serve the search UI and API."""
+    import uvicorn
+
+    target = "vsearch.api.main:app" if api_only else "vsearch.serve:app"
+    console.print(f"[bold]Serving[/] {target} on http://{host}:{port}")
+    uvicorn.run(target, host=host, port=port, reload=reload)
+
+
+@app.command()
 def publish(
     corpus: Annotated[str, typer.Option(help="Corpus of the run to publish.")] = "fashion",
     encoder: Annotated[str, typer.Option(help="Encoder of the run to publish.")] = "clip",

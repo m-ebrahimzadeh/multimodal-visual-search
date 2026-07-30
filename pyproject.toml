@@ -108,6 +108,10 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]
+# Gradio expresses layout as nested `with` blocks whose indentation mirrors the
+# rendered UI hierarchy. Collapsing them (SIM117) is functionally equivalent but
+# flattens the structure that makes the file readable.
+"src/vsearch/ui/app.py" = ["SIM117"]
 
 [tool.mypy]
 python_version = "3.12"
