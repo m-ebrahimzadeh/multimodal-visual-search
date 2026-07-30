@@ -1,12 +1,19 @@
 """Retrieval evaluation."""
 
+from vsearch.eval.compare import (
+    DEFAULT_METRICS,
+    Comparison,
+    paired_bootstrap,
+)
 from vsearch.eval.protocols import (
     FASHION_RELEVANCE_FIELDS,
     TextQuery,
     evaluate_image_to_image,
     evaluate_text_to_image,
     flickr_text_queries,
+    image_to_image_pairs,
     label_relevance_groups,
+    text_to_image_pairs,
 )
 from vsearch.eval.retrieval import (
     DEFAULT_KS,
@@ -23,7 +30,9 @@ from vsearch.eval.retrieval import (
 
 __all__ = [
     "DEFAULT_KS",
+    "DEFAULT_METRICS",
     "FASHION_RELEVANCE_FIELDS",
+    "Comparison",
     "Judged",
     "RetrievalMetrics",
     "TextQuery",
@@ -32,10 +41,13 @@ __all__ = [
     "evaluate_image_to_image",
     "evaluate_text_to_image",
     "flickr_text_queries",
+    "image_to_image_pairs",
     "label_relevance_groups",
     "ndcg_at_k",
+    "paired_bootstrap",
     "precision_at_k",
     "recall_at_k",
     "reciprocal_rank",
+    "text_to_image_pairs",
     "to_markdown_table",
 ]

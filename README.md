@@ -70,8 +70,8 @@ reproducible rather than something that happened once on a laptop.
 |---|---|---|
 | Text↔image | `openai/clip-vit-base-patch32` | 512-dim, ungated, fast on CPU |
 | Text↔image (quality) | `google/siglip2-base-patch16-224` | Stronger recall, slower |
-| Image↔image | `facebook/dinov3-vits16-pretrain-lvd1689m` | Self-supervised, 21 M params |
-| Image↔image fallback | `facebook/dinov2-small` | DINOv3 is licence-gated; the registry degrades instead of failing |
+| Image↔image | `facebook/dinov3-vits16-pretrain-lvd1689m` | Self-supervised, 21 M params, licence-gated |
+| Image↔image fallback | `facebook/dinov2-small` | Same 384 dims, so the registry degrades instead of failing |
 | Index | FAISS `IndexFlatIP` / `IndexHNSWFlat` | Native Windows wheels, no service to run |
 | Runtime | PyTorch + ONNX Runtime | Both behind one encoder interface |
 | API / UI | FastAPI + Gradio | One process, one loaded model |
@@ -152,6 +152,10 @@ they share `articleType` *and* `baseColour`. This is not human judgement, and th
 | config | queries | R@1 | R@5 | R@10 | MRR | mAP | nDCG@10 |
 |---|---|---|---|---|---|---|---|
 | clip / fashion / image→image (label proxy) | 39 | 0.158 | 0.547 | 0.718 | 0.445 | 0.398 | 0.490 |
+| dinov3 / fashion / image→image (label proxy) | 39 | 0.137 | 0.487 | 0.803 | 0.434 | 0.387 | 0.499 |
+
+Both rows index the **same 96 images** (verified by comparing id sets, not by trusting the run
+config), so the only variable is the encoder.
 
 Two caveats stated plainly:
 
@@ -162,6 +166,34 @@ Two caveats stated plainly:
 
 Queries whose item has no label-matched peer are skipped as unscoreable — counting them as 0 would
 understate the system, as 1 would overstate it.
+
+### Is DINOv3 actually better? The experiment can't tell.
+
+Reading the table above, DINOv3 leads on Recall@10 by +0.086 and CLIP leads on Recall@5 by +0.060.
+Both look like findings. Neither is. A paired bootstrap over the 39 shared queries — resample the
+query set 10,000 times, recompute the paired delta each time — puts a 95 % interval on every one:
+
+| metric | clip | dinov3 | delta | 95% CI | verdict |
+|---|---|---|---|---|---|
+| R@1 | 0.1581 | 0.1368 | -0.0214 | [-0.0897, +0.0300] | within noise |
+| R@5 | 0.5470 | 0.4872 | -0.0598 | [-0.2137, +0.0855] | within noise |
+| R@10 | 0.7179 | 0.8034 | +0.0855 | [-0.0256, +0.2051] | within noise |
+| MRR | 0.4445 | 0.4336 | -0.0110 | [-0.0869, +0.0669] | within noise |
+| mAP | 0.3984 | 0.3867 | -0.0118 | [-0.0768, +0.0516] | within noise |
+| nDCG@10 | 0.4899 | 0.4990 | +0.0091 | [-0.0594, +0.0806] | within noise |
+
+**Every interval straddles zero.** At 39 queries this corpus slice cannot separate a 21 M-parameter
+self-supervised ViT from CLIP's vision tower on the label proxy — the honest conclusion is *no
+measurable difference*, and the useful conclusion is that encoder selection needs the full corpus,
+not a smoke index. The test is paired (same queries both sides) because a hard query is hard for
+both encoders, and treating the two runs as independent samples would throw away most of the signal.
+
+```bash
+uv run python -m vsearch.eval.run_eval --corpus fashion --encoder clip --encoder dinov3 --protocol image --compare
+```
+
+The seed is fixed, so the interval is reproducible: a confidence bound that moves between runs of
+the same data is not evidence anyone can check.
 
 **Text→image Recall@k on the Flickr30k 1000-image test split is not yet measured.** It needs the
 full corpus ingested; run it on Colab (see `notebooks/`) and then:
@@ -219,13 +251,19 @@ Stated rather than buried:
 - **Text→image Recall@k is unmeasured** (see above). The harness is tested; the headline number is
   not yet produced.
 - **The image→image relevance signal is a label proxy**, not human judgement.
+- **The encoder comparison is underpowered.** 39 scoreable queries cannot separate CLIP from DINOv3;
+  every interval straddles zero. That is reported as "no measurable difference" rather than dressed
+  up as a winner, but it also means this project does not yet know which encoder is better here.
 - **Benchmarks are single-machine.** The GPU and 2-vCPU Space rows in the intended
   hardware × runtime matrix are not filled in. Numbers were measured on one laptop.
 - **FAISS on Windows has no AVX2 kernels** (`faiss.swigfaiss_avx2` is absent from the wheel), so
   Linux index timings will differ from the ones above.
-- **DINOv3 is licence-gated.** Without an accepted licence and `HF_TOKEN`, the registry falls back to
-  `dinov2-small` and logs it — so a run labelled "dinov3" in a demo may not be DINOv3. Evaluation and
-  benchmarking pass `allow_fallback=False` precisely so a reported table cannot be wrong about this.
+- **DINOv3 is licence-gated**, and the fallback is shape-compatible — same 384 dims, same L2 norm —
+  so a substitution changes no assertion downstream. Without an accepted licence and `HF_TOKEN` the
+  registry serves `dinov2-small` and logs it, which keeps a public demo alive but means a run
+  *labelled* "dinov3" is not proof it ran. Evaluation and benchmarking pass `allow_fallback=False`
+  so a reported table cannot be wrong about which model produced it; the tables above were produced
+  with the licence accepted and `facebook/dinov3-vits16-pretrain-lvd1689m` genuinely loaded.
 - **HNSW graph construction is non-deterministic** under OpenMP threading; recall is asserted at
   ≥ 0.95 against exact search rather than pinned exactly.
 
@@ -237,7 +275,7 @@ Stated rather than buried:
 uv run ruff check . && uv run mypy src && uv run pytest -m "not slow"
 ```
 
-237 fast tests, plus 6 marked `slow` that download real checkpoints (run with `-m slow`). CI runs
+246 fast tests, plus 7 marked `slow` that download real checkpoints (run with `-m slow`). CI runs
 lint, format, strict types and the fast suite, then builds the Docker image and boots it to confirm
 `/health` answers.
 

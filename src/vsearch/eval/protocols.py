@@ -93,37 +93,43 @@ def label_relevance_groups(store: FaissStore) -> dict[tuple[Any, ...], set[str]]
     return groups
 
 
-def evaluate_text_to_image(
+def text_to_image_pairs(
     store: FaissStore,
     encoder: BaseEncoder,
     queries: Sequence[TextQuery],
     *,
     k: int,
     batch_size: int = 64,
-) -> Iterator[Judged]:
-    """Run text queries and yield judgements.
+) -> Iterator[tuple[str, Judged]]:
+    """Run text queries and yield ``(query_key, judgement)``.
 
     Queries are encoded in batches; one forward pass per caption would make a
     5000-query run needlessly slow.
+
+    The key is ``<target_id>#<position>`` rather than the target id alone,
+    because five captions describe the same image and would otherwise collide
+    into one entry when a caller keys by query.
     """
     for start in range(0, len(queries), batch_size):
         window = queries[start : start + batch_size]
         vectors = encoder.encode_text([query.text for query in window])
-        for query, hits in zip(window, store.search(vectors, k=k), strict=True):
-            yield Judged(
+        scored = zip(window, store.search(vectors, k=k), strict=True)
+        for offset, (query, hits) in enumerate(scored):
+            judged = Judged(
                 ranked=[hit.id for hit in hits],
                 relevant=frozenset({query.target_id}),
             )
+            yield f"{query.target_id}#{start + offset}", judged
 
 
-def evaluate_image_to_image(
+def image_to_image_pairs(
     store: FaissStore,
     query_ids: Sequence[str],
     vectors: Any,
     *,
     k: int,
-) -> Iterator[Judged]:
-    """Yield judgements for image->image queries under the label proxy.
+) -> Iterator[tuple[str, Judged]]:
+    """Yield ``(query_id, judgement)`` for image->image queries.
 
     The query image is itself in the index, so it would trivially rank first;
     it is removed from both the ranking and the relevant set, otherwise every
@@ -146,4 +152,34 @@ def evaluate_image_to_image(
             # system; counting it as 1 would overstate it.
             continue
         ranked = [h.id for h in hits if h.id != identifier][:k]
-        yield Judged(ranked=ranked, relevant=frozenset(relevant))
+        yield identifier, Judged(ranked=ranked, relevant=frozenset(relevant))
+
+
+# The aggregate protocols discard the query key. Comparing two encoders needs
+# it -- a paired test must line up the *same* query on both sides -- so the
+# keyed generators above are the implementation and these stay as thin views.
+
+
+def evaluate_text_to_image(
+    store: FaissStore,
+    encoder: BaseEncoder,
+    queries: Sequence[TextQuery],
+    *,
+    k: int,
+    batch_size: int = 64,
+) -> Iterator[Judged]:
+    """Run text queries and yield judgements."""
+    for _, judged in text_to_image_pairs(store, encoder, queries, k=k, batch_size=batch_size):
+        yield judged
+
+
+def evaluate_image_to_image(
+    store: FaissStore,
+    query_ids: Sequence[str],
+    vectors: Any,
+    *,
+    k: int,
+) -> Iterator[Judged]:
+    """Yield judgements for image->image queries under the label proxy."""
+    for _, judged in image_to_image_pairs(store, query_ids, vectors, k=k):
+        yield judged

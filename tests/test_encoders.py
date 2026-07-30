@@ -303,10 +303,37 @@ def test_clip_semantics_are_sane() -> None:
 
 @pytest.mark.slow
 def test_dino_reports_declared_dim_and_registers() -> None:
+    """Tolerates the fallback on purpose: this covers the *demo* path.
+
+    See ``test_dinov3_is_not_silently_the_fallback`` for the assertion that the
+    named checkpoint actually loaded -- shape and norm cannot tell, because the
+    fallback was chosen to match both.
+    """
     encoder = load_encoder("dinov3", device="cpu", batch_size=2)
     out = encoder.encode_image(_images([224, 224]))
     assert out.shape == (2, encoder.dim)
     np.testing.assert_allclose(np.linalg.norm(out, axis=1), np.ones(2), atol=1e-5)
+
+
+@pytest.mark.slow
+def test_dinov3_is_not_silently_the_fallback() -> None:
+    """Pin the actual checkpoint, since every other signal is identical.
+
+    ``dinov2-small`` shares DINOv3's 384 dims and L2 norm, so a substitution
+    passes every shape and norm assertion in this file. Only ``model_id``
+    distinguishes them.
+
+    Skips rather than fails when the licence has not been accepted: that is a
+    missing credential, not a broken encoder -- but it skips *loudly*, which is
+    the property the shape assertions lacked.
+    """
+    try:
+        encoder = load_encoder("dinov3", device="cpu", batch_size=2, allow_fallback=False)
+    except registry_module._UNREACHABLE as exc:
+        pytest.skip(f"DINOv3 unreachable ({type(exc).__name__}); accept the licence, set HF_TOKEN")
+
+    assert encoder.spec.model_id == "facebook/dinov3-vits16-pretrain-lvd1689m"
+    assert encoder.spec.model_id != get_spec("dinov2").model_id
 
 
 @pytest.mark.slow

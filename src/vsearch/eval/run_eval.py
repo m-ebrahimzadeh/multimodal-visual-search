@@ -10,18 +10,22 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from vsearch.config import get_settings, resolve_device
 from vsearch.encoders import load_encoder
+from vsearch.eval.compare import Comparison, paired_bootstrap
+from vsearch.eval.compare import to_markdown_table as comparison_table
 from vsearch.eval.protocols import (
     evaluate_image_to_image,
     evaluate_text_to_image,
     flickr_text_queries,
+    image_to_image_pairs,
 )
-from vsearch.eval.retrieval import DEFAULT_KS, RetrievalMetrics, evaluate, to_markdown_table
+from vsearch.eval.retrieval import DEFAULT_KS, Judged, RetrievalMetrics, evaluate, to_markdown_table
 from vsearch.index import FaissStore
 
 logger = logging.getLogger(__name__)
@@ -133,17 +137,74 @@ def run_image_to_image(
     )
 
 
-def write_results(runs: list[EvalRun], results_dir: Path, ks: tuple[int, ...] = DEFAULT_KS) -> Path:
+def image_judgements(
+    artifacts_dir: Path,
+    corpus: str,
+    encoder_name: str,
+    *,
+    k: int = 10,
+    max_queries: int | None = 1000,
+) -> dict[str, Judged]:
+    """Per-query image->image judgements, keyed by query id for pairing."""
+    store = FaissStore.load(artifacts_dir / f"{corpus}__{encoder_name}" / "index")
+    ids = store.ids()
+    if max_queries is not None:
+        stride = max(1, len(ids) // max_queries)
+        ids = ids[::stride][:max_queries]
+    return dict(image_to_image_pairs(store, ids, store.vectors_for(ids), k=k))
+
+
+def run_comparison(
+    artifacts_dir: Path,
+    corpus: str,
+    encoders: Sequence[str],
+    *,
+    k: int = 10,
+    max_queries: int | None = 1000,
+) -> list[Comparison]:
+    """Paired bootstrap between exactly two image->image configurations."""
+    if len(encoders) != 2:
+        msg = f"--compare needs exactly two --encoder values, got {len(encoders)}"
+        raise ValueError(msg)
+
+    baseline, candidate = (
+        image_judgements(artifacts_dir, corpus, name, k=k, max_queries=max_queries)
+        for name in encoders
+    )
+    return paired_bootstrap(baseline, candidate)
+
+
+def write_results(
+    runs: list[EvalRun],
+    results_dir: Path,
+    ks: tuple[int, ...] = DEFAULT_KS,
+    comparisons: list[Comparison] | None = None,
+    comparison_labels: tuple[str, str] | None = None,
+) -> Path:
     """Persist metrics as JSON and a markdown table."""
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    payload = {"runs": [run.to_dict() for run in runs]}
+    payload: dict[str, Any] = {"runs": [run.to_dict() for run in runs]}
+    if comparisons:
+        payload["comparison"] = [item.to_dict() for item in comparisons]
     json_path = results_dir / "metrics.json"
     json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     rows = {run.label: run.metrics.summary_row(ks) for run in runs}
     table = to_markdown_table(rows, ks)
     (results_dir / "metrics.md").write_text(table + "\n", encoding="utf-8")
+
+    if comparisons and comparison_labels:
+        baseline_label, candidate_label = comparison_labels
+        (results_dir / "comparison.md").write_text(
+            comparison_table(
+                comparisons,
+                baseline_label=baseline_label,
+                candidate_label=candidate_label,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     logger.info("Wrote %s and metrics.md", json_path)
     return json_path
@@ -160,6 +221,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--max-queries", type=int, default=None)
     parser.add_argument("--device", default=None)
+    parser.add_argument(
+        "--compare",
+        action="store_true",
+        help="Paired bootstrap between two --encoder values (image protocol).",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -193,8 +259,26 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
 
-    write_results(runs, settings.results_dir)
+    comparisons: list[Comparison] | None = None
+    labels: tuple[str, str] | None = None
+    if args.compare:
+        if args.protocol != "image":
+            msg = "--compare currently supports the image protocol only"
+            raise ValueError(msg)
+        comparisons = run_comparison(
+            settings.artifacts_dir,
+            args.corpus,
+            encoders,
+            k=args.k,
+            max_queries=args.max_queries if args.max_queries is not None else 1000,
+        )
+        labels = (encoders[0], encoders[1])
+
+    write_results(runs, settings.results_dir, comparisons=comparisons, comparison_labels=labels)
     print(to_markdown_table({run.label: run.metrics.summary_row() for run in runs}, DEFAULT_KS))
+    if comparisons and labels:
+        print()
+        print(comparison_table(comparisons, baseline_label=labels[0], candidate_label=labels[1]))
     return 0
 
 

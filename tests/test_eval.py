@@ -17,13 +17,17 @@ from vsearch.eval import (
     evaluate,
     evaluate_image_to_image,
     flickr_text_queries,
+    image_to_image_pairs,
     label_relevance_groups,
     ndcg_at_k,
+    paired_bootstrap,
     precision_at_k,
     recall_at_k,
     reciprocal_rank,
     to_markdown_table,
 )
+from vsearch.eval.compare import Comparison
+from vsearch.eval.compare import to_markdown_table as comparison_table
 from vsearch.index import FaissStore
 
 DIM = 8
@@ -262,3 +266,125 @@ def test_vectors_for_rejects_unknown_ids() -> None:
     store = _store_with([{"a": 1}])
     with pytest.raises(KeyError, match="not in this index"):
         store.vectors_for(["nope"])
+
+
+# --- paired comparison -----------------------------------------------------
+
+_HIT = Judged(ranked=["x", "a", "b"], relevant=frozenset("x"))
+"""Relevant item at rank 1."""
+
+_MISS = Judged(ranked=["a", "b", "x"], relevant=frozenset("x"))
+"""Same relevant item, buried at rank 3."""
+
+_ONLY_METRIC = {"MRR": reciprocal_rank}
+
+
+def _runs(*outcomes: Judged) -> dict[str, Judged]:
+    return {f"q{i}": judged for i, judged in enumerate(outcomes)}
+
+
+def test_identical_runs_report_no_difference() -> None:
+    """A configuration compared with itself must not look like an improvement."""
+    runs = _runs(_HIT, _MISS, _HIT, _MISS)
+    (result,) = paired_bootstrap(runs, dict(runs), metrics=_ONLY_METRIC)
+
+    assert result.delta == 0.0
+    assert (result.ci_low, result.ci_high) == (0.0, 0.0)
+    assert not result.significant
+    assert result.verdict == "within noise"
+
+
+def test_a_uniform_improvement_is_significant() -> None:
+    """Every query improving is the one case the interval must exclude zero."""
+    keys = [f"q{i}" for i in range(20)]
+    baseline = dict.fromkeys(keys, _MISS)
+    candidate = dict.fromkeys(keys, _HIT)
+
+    (result,) = paired_bootstrap(baseline, candidate, metrics=_ONLY_METRIC)
+
+    assert result.delta == pytest.approx(1.0 - 1 / 3)
+    assert result.ci_low > 0.0
+    assert result.verdict == "candidate wins"
+
+
+def test_pairing_is_by_key_not_by_position() -> None:
+    """Two runs skip unscoreable queries independently, so order cannot be trusted.
+
+    Both mappings hold the same per-query outcomes; only the insertion order
+    differs. Pairing by position would compare q0's hit against q1's miss and
+    invent a difference that is not there.
+    """
+    forward = {"q0": _HIT, "q1": _MISS}
+    reversed_order = {"q1": _MISS, "q0": _HIT}
+
+    (result,) = paired_bootstrap(forward, reversed_order, metrics=_ONLY_METRIC)
+
+    assert result.delta == 0.0
+    assert result.queries == 2
+
+
+def test_comparison_uses_only_shared_queries() -> None:
+    """A query only one run could score is dropped, not scored as zero."""
+    baseline = {"q0": _HIT, "q1": _HIT}
+    candidate = {"q0": _HIT, "q2": _MISS}
+
+    (result,) = paired_bootstrap(baseline, candidate, metrics=_ONLY_METRIC)
+
+    assert result.queries == 1
+    assert result.delta == 0.0
+
+
+def test_disjoint_runs_are_rejected() -> None:
+    with pytest.raises(ValueError, match="share no scoreable queries"):
+        paired_bootstrap({"a": _HIT}, {"b": _HIT}, metrics=_ONLY_METRIC)
+
+
+def test_the_interval_is_reproducible() -> None:
+    """A confidence interval that moves between runs is not checkable evidence."""
+    baseline = _runs(_HIT, _MISS, _HIT, _MISS, _HIT)
+    candidate = _runs(_MISS, _MISS, _HIT, _HIT, _HIT)
+
+    first = paired_bootstrap(baseline, candidate, metrics=_ONLY_METRIC)
+    second = paired_bootstrap(baseline, candidate, metrics=_ONLY_METRIC)
+
+    assert first == second
+
+
+def test_a_straddling_interval_is_not_significant() -> None:
+    """The verdict follows the interval, never the sign of the delta."""
+    item = Comparison(
+        metric="R@10",
+        queries=39,
+        baseline=0.7179,
+        candidate=0.8034,
+        ci_low=-0.0256,
+        ci_high=0.2051,
+    )
+    assert item.delta > 0
+    assert not item.significant
+    assert item.verdict == "within noise"
+
+
+def test_comparison_table_shows_the_interval() -> None:
+    table = comparison_table(
+        [Comparison("MRR", 10, 0.5, 0.6, -0.1, 0.3)],
+        baseline_label="clip",
+        candidate_label="dinov3",
+    )
+    assert "| clip | dinov3 |" in table
+    assert "+0.1000" in table
+    assert "[-0.1000, +0.3000]" in table
+    assert "within noise" in table
+
+
+def test_image_to_image_pairs_key_on_the_query_id() -> None:
+    """The keyed view is what makes a paired comparison possible."""
+    payloads: list[dict[str, object]] = [
+        {"articleType": "Shirts", "baseColour": "Blue"} for _ in range(3)
+    ]
+    store = _store_with(payloads)
+    ids = ["item-0", "item-1"]
+    pairs = dict(image_to_image_pairs(store, ids, store.vectors_for(ids), k=2))
+
+    assert sorted(pairs) == ids
+    assert all(key not in judged.ranked for key, judged in pairs.items())

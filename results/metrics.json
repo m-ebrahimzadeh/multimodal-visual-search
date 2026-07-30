@@ -27,6 +27,96 @@
           "10": 0.4899001772768723
         }
       }
+    },
+    {
+      "corpus": "fashion",
+      "encoder": "dinov3",
+      "model_id": "facebook/dinov3-vits16-pretrain-lvd1689m",
+      "protocol": "image->image (label proxy)",
+      "device": "cpu",
+      "k": 10,
+      "metrics": {
+        "queries": 39,
+        "recall": {
+          "1": 0.13675213675213674,
+          "5": 0.48717948717948717,
+          "10": 0.8034188034188033
+        },
+        "precision": {
+          "1": 0.3076923076923077,
+          "5": 0.17435897435897438,
+          "10": 0.13076923076923078
+        },
+        "mrr": 0.43355718355718353,
+        "map": 0.3866910866910867,
+        "ndcg": {
+          "1": 0.3076923076923077,
+          "5": 0.38687167094102015,
+          "10": 0.49904703290379915
+        }
+      }
+    }
+  ],
+  "comparison": [
+    {
+      "metric": "R@1",
+      "queries": 39,
+      "baseline": 0.1581,
+      "candidate": 0.1368,
+      "delta": -0.0214,
+      "ci_low": -0.0897,
+      "ci_high": 0.03,
+      "significant": false
+    },
+    {
+      "metric": "R@5",
+      "queries": 39,
+      "baseline": 0.547,
+      "candidate": 0.4872,
+      "delta": -0.0598,
+      "ci_low": -0.2137,
+      "ci_high": 0.0855,
+      "significant": false
+    },
+    {
+      "metric": "R@10",
+      "queries": 39,
+      "baseline": 0.7179,
+      "candidate": 0.8034,
+      "delta": 0.0855,
+      "ci_low": -0.0256,
+      "ci_high": 0.2051,
+      "significant": false
+    },
+    {
+      "metric": "MRR",
+      "queries": 39,
+      "baseline": 0.4445,
+      "candidate": 0.4336,
+      "delta": -0.011,
+      "ci_low": -0.0869,
+      "ci_high": 0.0669,
+      "significant": false
+    },
+    {
+      "metric": "mAP",
+      "queries": 39,
+      "baseline": 0.3984,
+      "candidate": 0.3867,
+      "delta": -0.0118,
+      "ci_low": -0.0768,
+      "ci_high": 0.0516,
+      "significant": false
+    },
+    {
+      "metric": "nDCG@10",
+      "queries": 39,
+      "baseline": 0.4899,
+      "candidate": 0.499,
+      "delta": 0.0091,
+      "ci_low": -0.0594,
+      "ci_high": 0.0806,
+      "significant": false
     }
   ]
 }
