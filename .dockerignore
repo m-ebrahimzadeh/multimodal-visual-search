@@ -1,0 +1,40 @@
+# Keep the build context small: it is uploaded to the daemon (or to Spaces)
+# on every build, and artifacts/ alone can be gigabytes.
+.git/
+.github/
+.venv/
+venv/
+
+# Secrets must never reach an image layer.
+.env
+.env.*
+!.env.example
+
+# Generated data and models -- pulled at runtime, not baked in.
+data/
+artifacts/
+outputs/
+*.npy
+*.onnx
+*.onnx_data
+*.faiss
+
+# Caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.cache/
+hf_cache/
+
+# Dev-only
+tests/
+notebooks/
+.ipynb_checkpoints/
+.vscode/
+.idea/
+*.md
+!README.md

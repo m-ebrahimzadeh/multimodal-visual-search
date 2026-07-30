@@ -46,3 +46,36 @@ jobs:
 
       - name: Test
         run: uv run pytest -m "not slow" --cov=vsearch --cov-report=term-missing
+
+  docker:
+    # The image is authored on Windows, where Docker is not installed, so CI is
+    # where the Dockerfile is actually proven to build.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          load: true
+          tags: vsearch:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Boot without an index
+        # Must come up degraded rather than crash-looping: that is the
+        # behaviour a misconfigured Space depends on.
+        run: |
+          docker run -d --name vsearch-ci -p 7860:7860 vsearch:ci
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://localhost:7860/health > /tmp/health.json; then break; fi
+            sleep 5
+          done
+          cat /tmp/health.json
+          python -c "import json; s=json.load(open('/tmp/health.json'))['status']; print('status:', s); assert s in {'ok','degraded'}"
+          docker rm -f vsearch-ci
