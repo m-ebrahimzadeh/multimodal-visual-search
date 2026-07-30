@@ -21,7 +21,10 @@ dependencies = [
     "datasets>=3.0",
     "pyarrow>=17.0",
     "pandas>=2.2",
-    "huggingface-hub>=0.34",
+    # hf_xet enables Xet-backed chunked downloads. Both corpora and every
+    # checkpoint are Xet-hosted; without it the hub silently falls back to
+    # plain HTTP, which matters when pulling ~2 GB of images.
+    "huggingface-hub[hf_xet]>=0.34",
     # Service
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
