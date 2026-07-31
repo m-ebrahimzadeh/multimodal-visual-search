@@ -79,3 +79,106 @@ jobs:
           cat /tmp/health.json
           python -c "import json; s=json.load(open('/tmp/health.json'))['status']; print('status:', s); assert s in {'ok','degraded'}"
           docker rm -f vsearch-ci
+
+  deploy:
+    # Every push to main goes live on Cloudflare, plus a manual re-run via
+    # workflow_dispatch. Gated on `quality` and deliberately not on `docker`:
+    # that job builds the Hugging Face Space's image, which shares no code path
+    # with the static page, so making it stand between a CSS fix and production
+    # would buy nothing.
+    needs: quality
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.deployment-url }}
+    env:
+      # Only consulted if wrangler-action reports no URL back; the check below
+      # is worth more than the convenience of deriving this.
+      FALLBACK_URL: https://multimodal-visual-search.ebrahimzadeh-meh.workers.dev
+    steps:
+      - uses: actions/checkout@v4
+
+      # Before the upload, not after. An assets deploy replaces the *entire*
+      # manifest, so by the time a bad bundle is live the good one it replaced
+      # is already gone -- and the failure is silent, because a page with no
+      # `data/` renders its empty state rather than an error.
+      - name: Check the bundle is whole
+        run: python3 .github/scripts/check_web_bundle.py web/public/data
+
+      - name: Deploy to Cloudflare
+        id: deploy
+        # v4 defaults to Wrangler v4, which is what `web/package.json` pins and
+        # what the top-level `assets` key in wrangler.jsonc needs. v3 of the
+        # action would install Wrangler 3.x here.
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: web
+          command: deploy
+
+      # `wrangler deploy` exiting 0 means the upload was accepted, not that the
+      # bytes in this commit are the bytes on the edge. This is the narrow
+      # version of `vsearch verify-web` that CI can run: no FAISS index here,
+      # so it compares the deployment against the committed bundle instead --
+      # which catches the stale-or-no-op deploy that reports success.
+      - name: Check the deployment serves this commit's bundle
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url || env.FALLBACK_URL }}
+        run: |
+          set -euo pipefail
+          url="${DEPLOYMENT_URL%/}"
+          echo "verifying $url"
+
+          fetch() {
+            for attempt in 1 2 3 4 5; do
+              if curl -fsS --max-time 120 -o "$RUNNER_TEMP/$1" "$url/data/$1"; then
+                return 0
+              fi
+              echo "  $1 not served yet (attempt $attempt of 5)"
+              sleep 5
+            done
+            echo "::error::$url/data/$1 is not being served after a successful deploy"
+            return 1
+          }
+
+          status=0
+          for name in corpus.json embeddings.bin; do
+            fetch "$name"
+            served=$(sha256sum < "$RUNNER_TEMP/$name" | cut -d' ' -f1)
+            committed=$(sha256sum < "web/public/data/$name" | cut -d' ' -f1)
+            if [ "$served" = "$committed" ]; then
+              echo "  $name matches (sha256 ${served:0:16})"
+            else
+              echo "::error::$name: edge serves ${served:0:16}, this commit holds ${committed:0:16}"
+              status=1
+            fi
+          done
+
+          # One thumbnail, because `images/` is 2,000 of the 2,004 files in the
+          # bundle and is the part most likely to go missing wholesale.
+          thumbnail=$(python3 -c "import json,sys; print(next(i['image'] for i in json.load(open(sys.argv[1]))['items'] if i.get('image')))" "$RUNNER_TEMP/corpus.json")
+          if curl -fsS --max-time 60 -o /dev/null "$url/data/$thumbnail"; then
+            echo "  $thumbnail served"
+          else
+            echo "::error::$url/data/$thumbnail is missing; the images/ subtree did not upload"
+            status=1
+          fi
+
+          exit $status
+
+      - name: Summarise
+        if: always() && steps.deploy.conclusion == 'success'
+        run: |
+          {
+            echo "### Deployed"
+            echo ""
+            echo "<${{ steps.deploy.outputs.deployment-url || env.FALLBACK_URL }}>"
+            echo ""
+            echo "Verify against the local FAISS index (needs \`artifacts/\`, so not runnable here):"
+            echo ""
+            echo '```bash'
+            echo "uv run vsearch verify-web ${{ steps.deploy.outputs.deployment-url || env.FALLBACK_URL }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

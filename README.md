@@ -339,19 +339,37 @@ Four consequences worth stating:
   answer before the encoder has been fetched, and still answer if it cannot be fetched at all. The
   page shows a notice and keeps working.
 
+Pushing to `main` deploys it. [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the test
+suite, uploads `web/public/`, and then checks that what the edge serves is byte-identical to what
+the commit holds — a `wrangler deploy` exiting 0 means the upload was accepted, not that the bytes
+arrived. Re-exporting is the only manual step, and only when the index changes:
+
 ```bash
 uv run vsearch export-web --corpus fashion --encoder clip
+git add web/public/data && git commit -m "chore(web): re-export the bundle"
+```
+
+The bundle is committed rather than rebuilt in CI, and that is the load-bearing decision here. A
+Workers assets deploy replaces the *entire* manifest, so a bundle absent from the checkout is not
+left as it was — it is deleted from the live site by the next docs typo, and the page answers with
+its empty state rather than an error. `web/public/data/` is therefore tracked, thumbnails included,
+with `ATTRIBUTION.md` beside them; CI refuses to deploy a bundle that is missing pieces
+([`check_web_bundle.py`](.github/scripts/check_web_bundle.py)) rather than discovering it afterwards.
+
+Deploying by hand still works, and is the only way to run the stronger check:
+
+```bash
 cd web && npx wrangler login && npx wrangler deploy
 uv run vsearch verify-web https://<your-deployment>.workers.dev
 ```
 
 `verify-web` fetches what the deployment actually serves and scores it against the local FAISS
 index — byte-for-byte, then by ranking random probes both ways. A stale or half-finished upload does
-not fail loudly on its own; the page still renders a plausible grid of the wrong results.
-
-The export is gitignored: it copies third-party dataset thumbnails, and `wrangler deploy` uploads it
-from the working tree, so the repo does not need to redistribute them. Commit it only if you want
-Cloudflare's Git integration to build without running the export first.
+not fail loudly on its own; the page still renders a plausible grid of the wrong results. CI cannot
+run it, because a checkout has no `artifacts/`; it compares the deployment against the committed
+bundle instead, which catches staleness but cannot catch a bundle exported from the wrong run. Run
+`verify-web` after any re-export. Setup for the automated path is in
+[web/README.md](web/README.md#deploying).
 
 ---
 

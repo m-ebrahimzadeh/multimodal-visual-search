@@ -6,6 +6,9 @@
 *.key
 
 # --- Data & generated artifacts (large, reproducible, never committed) ---
+# `data/` has no leading slash, so it matches a directory of that name at any
+# depth -- including `web/public/data/`, which is tracked. See the negation in
+# the web section below; it has to come after this line to win.
 data/
 artifacts/
 outputs/
@@ -25,12 +28,18 @@ results/**/*.onnx
 # --- Web demo ---
 node_modules/
 .wrangler/
-# The exported bundle is generated (`vsearch export-web`) and holds copies of
-# third-party dataset thumbnails. Keeping it out of the repo avoids
-# redistributing someone else's images here; `wrangler deploy` uploads it from
-# the working tree. Commit it only if you want Cloudflare's Git integration to
-# build without a local export step first.
-web/public/data/
+# The exported bundle IS committed. It is generated (`vsearch export-web`) and
+# it does redistribute third-party dataset thumbnails, which is why it used to
+# be ignored -- but CI deploys from a checkout, and a Workers assets deploy
+# replaces the *entire* manifest. A bundle that is not in the checkout is not
+# "left as it was"; it is deleted from the live site by the next docs typo.
+# Tracking it is what makes push-to-deploy safe, and `ATTRIBUTION.md` ships
+# beside the images naming where they came from.
+#
+# The directory itself has to be un-ignored, not just its contents: git does
+# not descend into an excluded directory, so it never sees the files inside to
+# re-include them. `!web/public/data/**` alone would silently do nothing.
+!web/public/data/
 
 # --- Python ---
 __pycache__/

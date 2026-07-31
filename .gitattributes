@@ -17,6 +17,13 @@ Dockerfile text eol=lf
 *.ps1  text eol=crlf
 
 # Never munge binaries or notebook payloads.
+# `*.bin` is not decorative: `web/public/data/embeddings.bin` is tracked, and
+# `text=auto` above would otherwise decide its type by looking for a NUL byte
+# in the first 8 KB. Float32 vectors nearly always contain one, so it would
+# nearly always guess right -- and the failure mode of guessing wrong is CRLF
+# translation silently rewriting bytes inside the embeddings on a Windows
+# checkout. "Nearly always" is not a serialisation guarantee.
+*.bin  binary
 *.png  binary
 *.jpg  binary
 *.jpeg binary
