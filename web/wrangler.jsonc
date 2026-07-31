@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "multimodal-visual-search",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-07-31",
+
+  // Static assets are matched first, so `/`, `/data/*` and `/images/*` never
+  // reach the Worker. Only `/api/*` falls through to it, which is the whole
+  // point: the demo is a static page that borrows a GPU for one tensor.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+
+  "ai": {
+    "binding": "AI"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}

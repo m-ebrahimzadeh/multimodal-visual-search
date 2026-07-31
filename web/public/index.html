@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Multimodal Visual Search — CLIP retrieval demo</title>
+    <meta
+      name="description"
+      content="Search a product catalogue by natural language. CLIP ViT-B/32 embeddings, exact cosine ranking, measured Recall@k."
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>&#128269;</text></svg>"
+    />
+  </head>
+  <body>
+    <header class="masthead">
+      <div class="wrap">
+        <h1>Multimodal Visual Search</h1>
+        <p class="tagline">
+          Type what you mean, not what it&rsquo;s called. Ranking is exact cosine over
+          <a href="https://huggingface.co/openai/clip-vit-base-patch32">CLIP ViT-B/32</a> embeddings.
+        </p>
+        <dl class="stats" id="stats">
+          <div><dt>images</dt><dd id="stat-count">&mdash;</dd></div>
+          <div><dt>dimensions</dt><dd id="stat-dim">&mdash;</dd></div>
+          <div><dt>index</dt><dd>exact</dd></div>
+          <div><dt>search</dt><dd id="stat-latency">&mdash;</dd></div>
+        </dl>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="search" aria-label="Search">
+        <form id="search-form" role="search">
+          <input
+            id="query"
+            type="search"
+            name="q"
+            autocomplete="off"
+            placeholder="something to wear to the beach in summer"
+            aria-label="Search query"
+          />
+          <button type="submit" id="submit">Search</button>
+        </form>
+
+        <div class="examples" id="examples" aria-label="Example queries">
+          <span class="examples-label">Try:</span>
+        </div>
+
+        <p class="notice" id="notice" hidden></p>
+      </section>
+
+      <section class="controls" aria-label="Filters">
+        <label>
+          <span>Results</span>
+          <select id="topk">
+            <option value="12">12</option>
+            <option value="24" selected>24</option>
+            <option value="48">48</option>
+          </select>
+        </label>
+        <label>
+          <span>Category</span>
+          <select id="facet-articleType"><option value="">any</option></select>
+        </label>
+        <label>
+          <span>Colour</span>
+          <select id="facet-baseColour"><option value="">any</option></select>
+        </label>
+        <label>
+          <span>Gender</span>
+          <select id="facet-gender"><option value="">any</option></select>
+        </label>
+        <button type="button" id="reset" class="ghost">Reset</button>
+      </section>
+
+      <p class="result-summary" id="summary">Loading index&hellip;</p>
+      <ol class="grid" id="results"></ol>
+    </main>
+
+    <footer class="wrap">
+      <p>
+        Query text is embedded by
+        <code>@cf/openai/clip-vit-base-patch32</code> on Workers AI — the same checkpoint the
+        index was built from. Everything else (ranking, filtering) runs in this tab against a
+        <span id="stat-bytes">&mdash;</span> vector block.
+      </p>
+      <p class="links">
+        <a href="https://github.com/m-ebrahimzadeh/CV">Source &amp; measured Recall@k</a>
+        <span aria-hidden="true">·</span>
+        <a href="https://github.com/m-ebrahimzadeh/CV#limitations">Limitations</a>
+      </p>
+    </footer>
+
+    <template id="card-template">
+      <li class="card">
+        <div class="thumb"><img loading="lazy" alt="" /></div>
+        <div class="meta">
+          <p class="title"></p>
+          <p class="facets"></p>
+        </div>
+        <span class="score" title="cosine similarity"></span>
+      </li>
+    </template>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>

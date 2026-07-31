@@ -22,6 +22,16 @@ results/**/*.onnx
 *.onnx
 *.onnx_data
 
+# --- Web demo ---
+node_modules/
+.wrangler/
+# The exported bundle is generated (`vsearch export-web`) and holds copies of
+# third-party dataset thumbnails. Keeping it out of the repo avoids
+# redistributing someone else's images here; `wrangler deploy` uploads it from
+# the working tree. Commit it only if you want Cloudflare's Git integration to
+# build without a local export step first.
+web/public/data/
+
 # --- Python ---
 __pycache__/
 *.py[cod]
@@ -56,6 +66,7 @@ hf_cache/
 # --- Editors & OS ---
 .vscode/
 .idea/
+.claude/
 *.swp
 .DS_Store
 Thumbs.db

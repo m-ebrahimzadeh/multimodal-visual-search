@@ -162,6 +162,89 @@ def ingest(
 
 
 @app.command()
+def export_web(
+    corpus: Annotated[str, typer.Option(help="Corpus of the run to export.")] = "fashion",
+    encoder: Annotated[str, typer.Option(help="Encoder of the run to export.")] = "clip",
+    destination: Annotated[Path | None, typer.Option(help="Bundle output directory.")] = None,
+    device: Annotated[str | None, typer.Option(help="Override auto device selection.")] = None,
+    skip_examples: Annotated[
+        bool, typer.Option(help="Do not embed example queries (skips loading the encoder).")
+    ] = False,
+) -> None:
+    """Export a built index as static assets for the Cloudflare Worker demo.
+
+    Writes the index's own float32 block rather than rebuilding one, so the
+    deployed demo ranks by the same vectors the evaluation tables report on.
+    """
+    from vsearch.encoders import load_encoder
+    from vsearch.web import export_bundle
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    settings = get_settings()
+
+    run_dir = settings.artifacts_dir / f"{corpus}__{encoder}"
+    if not (run_dir / "index").exists():
+        console.print(f"[red]No index at {run_dir / 'index'}.[/] Run `vsearch ingest` first.")
+        raise typer.Exit(code=1)
+
+    text_encoder = None
+    if not skip_examples:
+        # allow_fallback is left at its default: the example vectors must match
+        # the index's space, and the registry only substitutes for gated image
+        # encoders, which cannot produce these in the first place.
+        text_encoder = load_encoder(encoder, device=device, token=settings.token)
+
+    bundle = export_bundle(
+        run_dir,
+        destination or Path("web/public/data"),
+        encoder=text_encoder,
+        source=_corpus_source(corpus),
+    )
+    console.print(
+        f"[bold green]Exported[/] {bundle.count} x {bundle.dim} vectors "
+        f"({bundle.embeddings_bytes / 1024:.0f} KB), {bundle.images} thumbnails, "
+        f"{bundle.examples} example queries -> {bundle.destination}"
+    )
+
+
+@app.command()
+def verify_web(
+    url: Annotated[str, typer.Argument(help="Base URL of the deployed Worker.")],
+    bundle: Annotated[
+        Path | None, typer.Option(help="Bundle directory holding examples.json.")
+    ] = None,
+) -> None:
+    """Measure the deployed Worker's query embeddings against the local ones.
+
+    The demo assumes Workers AI's CLIP is interchangeable with the PyTorch fp32
+    encoder the index was built from. This is that assumption, measured.
+    """
+    from vsearch.web import measure_parity
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    parity = measure_parity(url, bundle or Path("web/public/data"))
+
+    table = Table(title=f"query-embedding parity vs {url}", show_header=True)
+    table.add_column("query", overflow="fold")
+    table.add_column("cosine", justify="right")
+    for text, cosine in zip(parity.texts, parity.cosines, strict=True):
+        table.add_row(text, f"{cosine:.4f}")
+    console.print(table)
+    console.print(
+        f"[bold]mean[/] {parity.mean:.4f}  [bold]worst[/] {parity.worst:.4f} "
+        f"({parity.worst_query()!r})"
+    )
+
+
+def _corpus_source(corpus: str) -> str | None:
+    """Resolve a corpus name to its dataset URL for the attribution file."""
+    from vsearch.ingest import CORPORA
+
+    spec = CORPORA.get(corpus)
+    return f"https://huggingface.co/datasets/{spec.hf_id}" if spec else None
+
+
+@app.command()
 def serve(
     host: Annotated[str, typer.Option(help="Bind address.")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Port to listen on.")] = 7860,

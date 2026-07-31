@@ -8,6 +8,10 @@ Built on vision foundation models, with an explicit focus on the dimension most 
 **efficiency, deployment, and honest measurement**. Every speed number below is paired with the
 retrieval fidelity it cost.
 
+**▶ [Live demo](https://multimodal-visual-search.workers.dev)** — type a phrase, get ranked images.
+Try *"something to wear to the beach in summer"*: none of those words appear in any product name, so
+nothing but embedding space can answer it.
+
 ```bash
 uv sync --all-extras --group dev && uv run vsearch info
 ```
@@ -289,8 +293,49 @@ curl -s localhost:7860/search/text -H 'content-type: application/json' -d '{"que
 
 ## Deployment
 
-See [deploy/README.md](deploy/README.md). Short version: ingest on a GPU, `vsearch publish` the index
-to a Hub dataset repo, and point a Docker Space at it with `VSEARCH_ARTIFACT_REPO`.
+Two targets, for two different jobs.
+
+**Hugging Face Space** runs the real thing — FastAPI, Gradio, FAISS, both search directions
+including image→image. See [deploy/README.md](deploy/README.md): ingest on a GPU, `vsearch publish`
+the index to a Hub dataset repo, and point a Docker Space at it with `VSEARCH_ARTIFACT_REPO`. Free
+CPU Spaces sleep after 48 h, so the first visitor after a quiet spell waits out a cold start.
+
+**Cloudflare Worker** ([`web/`](web/)) runs the text→image half as a static page that answers
+instantly and never sleeps — which is what a link on a CV needs. The split:
+
+```
+browser                                    Cloudflare
+  ├── embeddings.bin  192 KB  ──cached──┐
+  ├── ranking (dot product, ~2 ms)      ├── static assets
+  ├── facet filters (no round trip)     ┘
+  └── POST /api/embed ───────────────────> Worker ──> Workers AI
+                                                      @cf/openai/clip-vit-base-patch32
+```
+
+The Worker's only job is turning a sentence into a vector. Ranking and filtering happen in the tab,
+against the float32 block written straight out of `index.faiss` — so the demo and the tables above
+score the *same bytes*, and changing a filter costs no request.
+
+Three consequences worth stating:
+
+- **No vector database.** At these sizes an exact scan is microseconds, and a hosted index would be a
+  second copy of the embeddings that nothing checks against the first.
+- **Same checkpoint as the index.** Workers AI serves `openai/clip-vit-base-patch32`, the one the
+  index was built from. An in-browser runtime would serve a *quantized* text tower instead — and
+  [the benchmark above](#benchmarks) measures int8 CLIP text parity at **0.8830**, so that path
+  would query the index in a measurably different space. Verify the deployed one with
+  `vsearch verify-web <url>`, which scores its embeddings against the local fp32 ones.
+- **It degrades instead of breaking.** Example queries ship with their vectors precomputed, so they
+  answer with the Worker unreachable or its AI quota spent. The page shows a notice and keeps working.
+
+```bash
+uv run vsearch export-web --corpus fashion --encoder clip
+cd web && npx wrangler login && npx wrangler deploy
+```
+
+The export is gitignored: it copies third-party dataset thumbnails, and `wrangler deploy` uploads it
+from the working tree, so the repo does not need to redistribute them. Commit it only if you want
+Cloudflare's Git integration to build without running the export first.
 
 ---
 
@@ -317,6 +362,14 @@ Stated rather than buried:
   with the licence accepted and `facebook/dinov3-vits16-pretrain-lvd1689m` genuinely loaded.
 - **HNSW graph construction is non-deterministic** under OpenMP threading; recall is asserted at
   ≥ 0.95 against exact search rather than pinned exactly.
+- **The live demo searches 96 images**, a smoke-test slice of a 44,072-image corpus, so it shows the
+  retrieval behaviour and not the retrieval difficulty. Ranking within 96 candidates is a far easier
+  problem than the numbers above describe. Re-exporting over a larger ingest needs no code change —
+  the bundle scales linearly and 44k vectors is 88 MB — but the deployed one is small, and calling
+  that a demo of scale would be a lie.
+- **Worker query-embedding parity is unmeasured until deployed.** `@cf/openai/clip-vit-base-patch32`
+  names the same checkpoint the index uses, which is a strong reason to expect agreement and not a
+  measurement of it. `vsearch verify-web` exists to settle it against the local fp32 encoder.
 
 ---
 
@@ -326,7 +379,7 @@ Stated rather than buried:
 uv run ruff check . && uv run mypy src && uv run pytest -m "not slow"
 ```
 
-251 fast tests, plus 7 marked `slow` that download real checkpoints (run with `-m slow`). CI runs
+265 fast tests, plus 7 marked `slow` that download real checkpoints (run with `-m slow`). CI runs
 lint, format, strict types and the fast suite, then builds the Docker image and boots it to confirm
 `/health` answers.
 
