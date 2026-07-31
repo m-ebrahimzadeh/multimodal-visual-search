@@ -75,12 +75,13 @@ function acquire(onProgress) {
       ]);
       return { tokenizer, model };
     } catch (cause) {
-      // Worth naming the host rather than passing on a bare "Failed to fetch".
-      // Reaching huggingface.co is the one thing this page needs from a
-      // third party, and networks that filter it -- corporate proxies, some
-      // regions -- are exactly the ones where a visitor cannot guess why a
-      // search box stopped working.
-      throw new Error(`could not fetch ${MODEL} from ${host(env.remoteHost)}: ${cause.message}`);
+      // Worth naming the host, and worth saying why. A blocked download does
+      // not surface here as "Failed to fetch": the loader carries the missing
+      // response a long way before dereferencing it, and the message that comes
+      // out is "Cannot read properties of undefined (reading 'tokenizer_class')".
+      // That reads like a bug in this page rather than a request the network
+      // refused, so `explain` goes and finds out which it was.
+      throw new Error(await explain(env.remoteHost, cause));
     }
   })();
 
@@ -112,14 +113,6 @@ export async function encode(texts, onProgress) {
   );
 }
 
-/**
- * Scale to unit length.
- *
- * CLIP's projection head does not normalise, but the index does. Skipping this
- * would not reorder a single query's results -- every score scales by the same
- * constant -- so the bug would be invisible in the grid while making the
- * displayed cosines wrong and the parity measurement meaningless.
- */
 /** Hostname of a URL, for error messages. Falls back to the raw value. */
 function host(url) {
   try {
@@ -129,6 +122,54 @@ function host(url) {
   }
 }
 
+/**
+ * Work out why the weights did not arrive, and say so in one sentence.
+ *
+ * Runs only after a load has already failed, so the extra requests cost nothing
+ * in the normal case. The two modes fail for different reasons, which is the
+ * point: `no-cors` resolves to an unreadable opaque response whenever the
+ * connection itself works, while `cors` additionally needs the host to permit
+ * this origin. So no-cors failing means the host is unreachable, and no-cors
+ * succeeding while cors fails means it was reached but something between the
+ * two -- a filtering proxy, an extension blocking third-party reads -- would
+ * not let the page have the bytes.
+ *
+ * The probe is the model's own `config.json` rather than the host root: the
+ * root is an HTML page that sends no `Access-Control-Allow-Origin`, so a cors
+ * probe against it fails on a *healthy* network and would blame one wrongly.
+ */
+async function explain(remoteHost, cause) {
+  const name = host(remoteHost);
+  const probe = `${String(remoteHost).replace(/\/$/, "")}/${MODEL}/resolve/main/config.json`;
+  const reachable = async (mode) => {
+    try {
+      await fetch(probe, { mode });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  if (!(await reachable("no-cors"))) {
+    return `could not reach ${name} — the network refused the request`;
+  }
+  if (!(await reachable("cors"))) {
+    return (
+      `${name} is reachable, but this browser would not let the page read the ` +
+      `response — a proxy or an extension is blocking cross-origin reads`
+    );
+  }
+  return `could not fetch ${MODEL} from ${name}: ${cause.message}`;
+}
+
+/**
+ * Scale to unit length.
+ *
+ * CLIP's projection head does not normalise, but the index does. Skipping this
+ * would not reorder a single query's results -- every score scales by the same
+ * constant -- so the bug would be invisible in the grid while making the
+ * displayed cosines wrong and the parity measurement meaningless.
+ */
 function normalize(vector) {
   let sum = 0;
   for (const value of vector) sum += value * value;

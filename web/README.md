@@ -93,9 +93,17 @@ Any static server exercises the whole thing, encoder included:
 python -m http.server 8788 --directory public
 ```
 
-To see the degraded path deliberately, block `cdn.jsdelivr.net` in devtools and search: the example
-chips still work, and free text surfaces a notice instead of an empty page. That is what a visitor
-gets on a restricted network, so it is worth seeing on purpose rather than discovering in production.
+To see the degraded path deliberately, block `cdn.jsdelivr.net` or `huggingface.co` in devtools and
+search: the example chips still work, and free text surfaces a notice instead of an empty page. That
+is what a visitor gets on a restricted network, so it is worth seeing on purpose rather than
+discovering in production.
+
+The notice names the actual cause, because the library does not. A blocked download reaches the
+loader as a null dereference — `Cannot read properties of undefined (reading 'tokenizer_class')` —
+which reads like a bug in this page. So on failure the encoder probes the host twice, `no-cors` then
+`cors`, and distinguishes "could not reach `huggingface.co`" from "reachable, but this browser would
+not let the page read the response", which is what a filtering proxy or a blocking extension looks
+like from inside the tab.
 
 ## Layout
 
