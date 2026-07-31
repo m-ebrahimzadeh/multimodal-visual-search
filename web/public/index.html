@@ -49,6 +49,11 @@
           <span class="examples-label">Try:</span>
         </div>
 
+        <div class="progress" id="progress" hidden>
+          <p class="progress-label" id="progress-label"></p>
+          <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
+        </div>
+
         <p class="notice" id="notice" hidden></p>
       </section>
 
@@ -82,11 +87,13 @@
 
     <footer class="wrap">
       <p>
-        Query text is embedded by
-        <code>@cf/openai/clip-vit-base-patch32</code> on Workers AI — the same checkpoint the
-        index was built from. Everything else (ranking, filtering) runs in this tab against a
-        <span id="stat-bytes">&mdash;</span> vector block.
+        There is no backend. Ranking and filtering run in this tab against a
+        <span id="stat-bytes">&mdash;</span> block of float32 copied straight out of the FAISS
+        index, so the demo scores the same bytes the published Recall@k was measured on. Free
+        text is embedded here too — CLIP ViT-B/32&rsquo;s text tower as int8 ONNX on WebAssembly,
+        fetched once from the Hugging&nbsp;Face CDN and then cached by your browser.
       </p>
+      <p class="parity" id="parity" hidden></p>
       <p class="links">
         <a href="https://github.com/m-ebrahimzadeh/CV">Source &amp; measured Recall@k</a>
         <span aria-hidden="true">·</span>

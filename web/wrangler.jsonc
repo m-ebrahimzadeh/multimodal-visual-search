@@ -1,19 +1,16 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "multimodal-visual-search",
-  "main": "worker/index.ts",
   "compatibility_date": "2026-07-31",
 
-  // Static assets are matched first, so `/`, `/data/*` and `/images/*` never
-  // reach the Worker. Only `/api/*` falls through to it, which is the whole
-  // point: the demo is a static page that borrows a GPU for one tensor.
+  // No `main`, and that is the point. An earlier revision ran a Worker whose
+  // only job was POST /api/embed -> Workers AI CLIP; Workers AI turned out to
+  // have no CLIP model in its catalogue, so the text tower moved into the
+  // browser. With the encoder there and the index already a static float32
+  // block, nothing is left to execute server-side. This deploys `public/` and
+  // stops.
   "assets": {
-    "directory": "./public",
-    "binding": "ASSETS"
-  },
-
-  "ai": {
-    "binding": "AI"
+    "directory": "./public"
   },
 
   "observability": {

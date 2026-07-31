@@ -3,14 +3,20 @@
  *
  * The index is a `count x dim` block of unit-norm float32 written straight out
  * of the FAISS artifact, so scoring is a dot product and nothing here needs a
- * library. Two consequences shape the code below:
+ * library. Three consequences shape the code below:
  *
  *   - A query is embedded once and kept. Changing a facet or the result count
- *     re-ranks from the cached vector, so filters cost no network round trip.
- *   - Example queries arrive with their vectors already computed, so they run
- *     the identical path with `fetch` skipped entirely. If the Worker is down
- *     or its quota is spent, they still work.
+ *     re-ranks from the cached vector, so filters cost nothing beyond a scan.
+ *   - Example queries arrive with their vectors already computed, so they skip
+ *     the encoder entirely -- which is what makes the page useful in the first
+ *     second, before 62 MB of weights have been fetched.
+ *   - Those same precomputed vectors are fp32, produced by the PyTorch encoder
+ *     that built the index. The in-browser encoder is int8. So the page can
+ *     re-encode the example strings and measure the gap between the two,
+ *     against ground truth, on the visitor's machine. See `measureParity`.
  */
+
+import { ENCODER, encode, isResident } from "./encoder.js";
 
 const DATA = "data";
 const state = {
@@ -21,7 +27,6 @@ const state = {
   /** Cached vector of the last successful query, so filters re-rank locally. */
   queryVector: null,
   queryText: "",
-  remoteEmbeddingBroken: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -125,22 +130,16 @@ function topK(query, rows, k) {
   return scored.slice(0, k);
 }
 
-/** Ask the Worker to embed free text. Returns null when it cannot. */
-async function embedRemotely(text) {
-  const response = await fetch("/api/embed", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ text }),
-  });
-  if (!response.ok) {
-    const detail = await response.json().catch(() => ({}));
-    throw new Error(detail.error ?? `embedding service returned ${response.status}`);
+/** Embed free text here in the tab, fetching the weights the first time. */
+async function embedLocally(text) {
+  const [vector] = await encode([text], isResident() ? undefined : reportProgress);
+  if (vector.length !== state.corpus.dim) {
+    // Cannot happen with the pinned model, and is worth catching loudly if the
+    // pin is ever changed: a 768-d query silently scored against a 512-d index
+    // would produce a ranked list of noise, not an error.
+    throw new Error(`query is ${vector.length}-d but the index is ${state.corpus.dim}-d`);
   }
-  const { vector, dim } = await response.json();
-  if (dim !== state.corpus.dim) {
-    throw new Error(`query is ${dim}-d but the index is ${state.corpus.dim}-d`);
-  }
-  return Float32Array.from(vector);
+  return vector;
 }
 
 async function run(text, precomputed = null) {
@@ -153,22 +152,70 @@ async function run(text, precomputed = null) {
     let embedMs = 0;
     if (!vector) {
       const started = performance.now();
-      vector = await embedRemotely(text);
+      vector = await embedLocally(text);
       embedMs = performance.now() - started;
-      state.remoteEmbeddingBroken = false;
     }
 
     state.queryVector = vector;
     state.queryText = text;
     rankAndRender(embedMs);
+    if (!precomputed) void measureParity();
   } catch (error) {
-    state.remoteEmbeddingBroken = true;
     notice(
-      `Live text encoding is unavailable (${error.message}). ` +
-        `The example queries below still work — they ship with their vectors precomputed.`
+      `Free-text search needs a one-time download of the CLIP text encoder, and this ` +
+        `browser or network could not complete it — ${error.message}. ` +
+        `The example queries below still work: their vectors ship with the page.`
     );
   } finally {
+    progress(null);
     button.disabled = false;
+  }
+}
+
+/* -- Self-measurement ----------------------------------------------------- */
+
+/**
+ * Re-encode the example strings and compare against their stored fp32 vectors.
+ *
+ * This is the honest version of a claim the page would otherwise be making
+ * silently: that an int8 text tower is interchangeable with the fp32 one the
+ * index was built from. This project already measured its own int8 CLIP text
+ * export at 0.8830 cosine against that baseline -- the weakest number in its
+ * benchmark table -- so "same checkpoint, so same vectors" is exactly the
+ * assumption that has already been wrong once here.
+ *
+ * The comparison is free of network dependencies: both halves are on the page.
+ * Runs once, after the first free-text query has already been answered.
+ */
+let parityMeasured = false;
+
+async function measureParity() {
+  if (parityMeasured || state.examples.length === 0) return;
+  parityMeasured = true;
+
+  try {
+    const texts = state.examples.map((example) => example.text);
+    const local = await encode(texts);
+
+    // Both sides are unit-norm, so the inner product is the cosine directly.
+    const cosines = local.map((vector, i) => {
+      const reference = state.examples[i].vector;
+      let sum = 0;
+      for (let j = 0; j < vector.length; j++) sum += vector[j] * reference[j];
+      return sum;
+    });
+
+    const mean = cosines.reduce((a, b) => a + b, 0) / cosines.length;
+    const worst = Math.min(...cosines);
+    el("parity").textContent =
+      `Measured on this machine: mean ${mean.toFixed(4)} cosine against the fp32 vectors ` +
+      `the index was built with, worst ${worst.toFixed(4)} ` +
+      `(“${texts[cosines.indexOf(worst)]}”), over ${cosines.length} queries.`;
+    el("parity").hidden = false;
+  } catch {
+    // A missing parity line is cosmetic; a broken search is not. The encoder
+    // has already answered a real query by the time this runs.
+    parityMeasured = false;
   }
 }
 
@@ -248,6 +295,38 @@ function notice(message) {
   const host = el("notice");
   host.hidden = message === null;
   host.textContent = message ?? "";
+}
+
+/** Show download progress, or hide the bar entirely when passed null. */
+function progress(fraction, label = "") {
+  const host = el("progress");
+  host.hidden = fraction === null;
+  if (fraction === null) return;
+  el("progress-bar").style.width = `${Math.round(fraction * 100)}%`;
+  el("progress-label").textContent = label;
+}
+
+/**
+ * Aggregate transformers.js per-file progress into one bar.
+ *
+ * The library reports each file separately and the sizes are wildly uneven --
+ * a 62 MB tensor file next to a 2 MB tokenizer -- so a per-file bar would sit
+ * at "1 of 4" for the entire wait. Summing bytes tracks the actual delay.
+ */
+const downloads = new Map();
+
+function reportProgress(event) {
+  if (event.status !== "progress" || !event.total) return;
+  downloads.set(event.file, { loaded: event.loaded, total: event.total });
+
+  let loaded = 0;
+  let total = 0;
+  for (const entry of downloads.values()) {
+    loaded += entry.loaded;
+    total += entry.total;
+  }
+  const mb = (bytes) => (bytes / 1024 / 1024).toFixed(0);
+  progress(loaded / total, `Fetching the CLIP text encoder — ${mb(loaded)} / ${mb(total)} MB`);
 }
 
 /* -- Wiring --------------------------------------------------------------- */

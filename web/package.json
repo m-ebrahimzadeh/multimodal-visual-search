@@ -1,15 +1,12 @@
 {
   "name": "multimodal-visual-search-web",
   "private": true,
-  "description": "Cloudflare Worker serving the static CLIP retrieval demo",
+  "description": "Static CLIP retrieval demo deployed to Cloudflare",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit"
+    "deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250109.0",
-    "typescript": "^5.7.0",
     "wrangler": "^4.0.0"
   }
 }

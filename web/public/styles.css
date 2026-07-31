@@ -201,6 +201,32 @@ button.ghost {
   opacity: 1;
 }
 
+/* The encoder is a one-time ~62 MB fetch. Without a byte count the page looks
+   hung; with one it looks like a download, which is what it is. */
+.progress {
+  margin: 14px 0 0;
+}
+
+.progress-label {
+  margin: 0 0 6px;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.progress-track {
+  height: 6px;
+  overflow: hidden;
+  background: var(--accent-soft);
+  border-radius: 999px;
+}
+
+.progress-bar {
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  transition: width 120ms linear;
+}
+
 .notice {
   margin: 14px 0 0;
   padding: 10px 14px;
@@ -349,6 +375,11 @@ footer {
 footer p {
   margin: 0 0 8px;
   max-width: 74ch;
+}
+
+.parity {
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
 }
 
 .links {

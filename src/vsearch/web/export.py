@@ -1,7 +1,7 @@
-"""Export a built index as the static bundle the Cloudflare Worker serves.
+"""Export a built index as the static bundle the browser searches.
 
-The Worker runtime has no FAISS, no numpy and no Python. What it does have is
-the only thing a ``flat`` index actually *is*: a contiguous block of float32
+A browser has no FAISS, no numpy and no Python. What a ``flat`` index actually
+*is*, though, is the only thing it needs: a contiguous block of float32
 vectors. This module writes that block out verbatim, so the deployed demo
 searches the same bytes the evaluation tables were measured on rather than a
 re-derived copy that can silently drift from them.
@@ -23,9 +23,12 @@ Four files leave here:
     That order is the only join key -- the binary has no id column.
 
 ``examples.json``
-    Query vectors for the example searches, encoded here rather than at
-    request time. A spent Workers AI quota or a failed binding then degrades
-    the page to "examples only" instead of breaking a link on a CV.
+    Query vectors for the example searches, encoded here by the same fp32
+    PyTorch encoder that built the index. Two jobs: the page answers them
+    instantly, before it has fetched 62 MB of in-browser text encoder, and it
+    can re-encode the same strings afterwards to measure that encoder against
+    a local fp32 ground truth. If the encoder cannot be fetched at all, these
+    keep the page working instead of breaking a link on a CV.
 
 ``ATTRIBUTION.md``
     Where the thumbnails came from. They are third-party dataset images, and a

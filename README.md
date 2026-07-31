@@ -8,9 +8,10 @@ Built on vision foundation models, with an explicit focus on the dimension most 
 **efficiency, deployment, and honest measurement**. Every speed number below is paired with the
 retrieval fidelity it cost.
 
-**▶ [Live demo](https://multimodal-visual-search.workers.dev)** — type a phrase, get ranked images.
-Try *"something to wear to the beach in summer"*: none of those words appear in any product name, so
-nothing but embedding space can answer it.
+**▶ [Live demo](https://multimodal-visual-search.ebrahimzadeh-meh.workers.dev)** — type a phrase,
+get ranked images. Try *"something to wear to the beach in summer"*: none of those words appear in
+any product name, so nothing but embedding space can answer it. No backend — the index, the ranking
+and the CLIP text encoder all run in the tab.
 
 ```bash
 uv sync --all-extras --group dev && uv run vsearch info
@@ -300,38 +301,53 @@ including image→image. See [deploy/README.md](deploy/README.md): ingest on a G
 the index to a Hub dataset repo, and point a Docker Space at it with `VSEARCH_ARTIFACT_REPO`. Free
 CPU Spaces sleep after 48 h, so the first visitor after a quiet spell waits out a cold start.
 
-**Cloudflare Worker** ([`web/`](web/)) runs the text→image half as a static page that answers
-instantly and never sleeps — which is what a link on a CV needs. The split:
+**Cloudflare** ([`web/`](web/)) runs the text→image half as a static page that answers instantly and
+never sleeps — which is what a link on a CV needs. There is no server-side component at all:
 
 ```
-browser                                    Cloudflare
-  ├── embeddings.bin  192 KB  ──cached──┐
-  ├── ranking (dot product, ~2 ms)      ├── static assets
-  ├── facet filters (no round trip)     ┘
-  └── POST /api/embed ───────────────────> Worker ──> Workers AI
-                                                      @cf/openai/clip-vit-base-patch32
+browser                                          Cloudflare
+  ├── embeddings.bin        ──cached──┐
+  ├── corpus.json + thumbs  ──────────┼── static assets, no Worker
+  ├── ranking (dot product, ~2 ms)    ┘
+  ├── facet filters (no round trip)
+  └── CLIP text tower ─────────────────> Hugging Face CDN (once, then cached)
+      int8 ONNX on WebAssembly           Xenova/clip-vit-base-patch32
 ```
 
-The Worker's only job is turning a sentence into a vector. Ranking and filtering happen in the tab,
-against the float32 block written straight out of `index.faiss` — so the demo and the tables above
-score the *same bytes*, and changing a filter costs no request.
+Ranking and filtering happen in the tab against the float32 block written straight out of
+`index.faiss` — so the demo and the tables above score the *same bytes*, and changing a filter costs
+no request. The text encoder happens in the tab too.
 
-Three consequences worth stating:
+Four consequences worth stating:
 
 - **No vector database.** At these sizes an exact scan is microseconds, and a hosted index would be a
   second copy of the embeddings that nothing checks against the first.
-- **Same checkpoint as the index.** Workers AI serves `openai/clip-vit-base-patch32`, the one the
-  index was built from. An in-browser runtime would serve a *quantized* text tower instead — and
-  [the benchmark above](#benchmarks) measures int8 CLIP text parity at **0.8830**, so that path
-  would query the index in a measurably different space. Verify the deployed one with
-  `vsearch verify-web <url>`, which scores its embeddings against the local fp32 ones.
+- **No hosted encoder, deliberately.** The first cut of this called Workers AI's
+  `@cf/openai/clip-vit-base-patch32`. That model does not exist — Workers AI's catalogue has no CLIP
+  at all, and its text-embedding models are useless here because they map into their own space with
+  no geometric relation to CLIP's joint one. The alternative, the HF Inference API, needs a token
+  that has to be stored and rotated, and has a nastier failure mode than it looks: CLIP ViT-B/32's
+  `pooler_output` and `text_embeds` are *both* 512-d, so a wrong-space vector passes a dimension
+  check silently. Shipping the encoder to the client removes the secret, the quota and the question.
+- **That costs accuracy, and the page says so.** The in-browser tower is int8, not the fp32
+  checkpoint the index was built from. `examples.json` carries fp32 vectors for the example queries,
+  so the page re-encodes those same strings and reports the gap in its own footer. Measured on this
+  laptop: **mean 0.9336** cosine, worst 0.8950, top-1 agreement **5/6**, mean top-10 overlap
+  **7.8/10**. That is the same trade-off [the benchmark above](#benchmarks) reports at 0.8830 for
+  this project's own int8 export — now paid in public rather than in a table.
 - **It degrades instead of breaking.** Example queries ship with their vectors precomputed, so they
-  answer with the Worker unreachable or its AI quota spent. The page shows a notice and keeps working.
+  answer before the encoder has been fetched, and still answer if it cannot be fetched at all. The
+  page shows a notice and keeps working.
 
 ```bash
 uv run vsearch export-web --corpus fashion --encoder clip
 cd web && npx wrangler login && npx wrangler deploy
+uv run vsearch verify-web https://<your-deployment>.workers.dev
 ```
+
+`verify-web` fetches what the deployment actually serves and scores it against the local FAISS
+index — byte-for-byte, then by ranking random probes both ways. A stale or half-finished upload does
+not fail loudly on its own; the page still renders a plausible grid of the wrong results.
 
 The export is gitignored: it copies third-party dataset thumbnails, and `wrangler deploy` uploads it
 from the working tree, so the repo does not need to redistribute them. Commit it only if you want
@@ -362,14 +378,20 @@ Stated rather than buried:
   with the licence accepted and `facebook/dinov3-vits16-pretrain-lvd1689m` genuinely loaded.
 - **HNSW graph construction is non-deterministic** under OpenMP threading; recall is asserted at
   ≥ 0.95 against exact search rather than pinned exactly.
-- **The live demo searches 96 images**, a smoke-test slice of a 44,072-image corpus, so it shows the
-  retrieval behaviour and not the retrieval difficulty. Ranking within 96 candidates is a far easier
-  problem than the numbers above describe. Re-exporting over a larger ingest needs no code change —
-  the bundle scales linearly and 44k vectors is 88 MB — but the deployed one is small, and calling
-  that a demo of scale would be a lie.
-- **Worker query-embedding parity is unmeasured until deployed.** `@cf/openai/clip-vit-base-patch32`
-  names the same checkpoint the index uses, which is a strong reason to expect agreement and not a
-  measurement of it. `vsearch verify-web` exists to settle it against the local fp32 encoder.
+- **The live demo searches 2,000 images**, a slice of a 44,072-image corpus, so it shows the
+  retrieval behaviour and not the retrieval difficulty. Ranking within 2,000 candidates is an easier
+  problem than the numbers above describe. Exporting the whole corpus needs no code change — the
+  bundle scales linearly — but 44k vectors is a 88 MB download before the first query, so the
+  deployed one is a slice, and calling it a demo of scale would be a lie.
+- **The demo's query encoder is int8 and the index is fp32.** They are the same checkpoint but not
+  the same weights, and the gap is not negligible: mean 0.9336 cosine, and on the example queries
+  top-1 disagrees once in six. The demo mitigates rather than hides this — example queries carry
+  fp32 vectors, so the showcased results are exact, and the page reports its own measured parity.
+  Typed free text is the degraded path. The fp16 and 4-bit exports would be closer but fail to
+  build an ONNX Runtime session on the WASM backend, and fp32 is a 242 MB download.
+- **`artifacts/fashion__clip` is shared between the demo and the eval.** The tables above come from
+  a 96-image ingest; the deployed bundle comes from a 2,000-image one. They write to the same run
+  directory, and the pipeline refuses to merge them — delete it before switching, as its error says.
 
 ---
 
@@ -379,7 +401,7 @@ Stated rather than buried:
 uv run ruff check . && uv run mypy src && uv run pytest -m "not slow"
 ```
 
-265 fast tests, plus 7 marked `slow` that download real checkpoints (run with `-m slow`). CI runs
+271 fast tests, plus 7 marked `slow` that download real checkpoints (run with `-m slow`). CI runs
 lint, format, strict types and the fast suite, then builds the Docker image and boots it to confirm
 `/health` answers.
 

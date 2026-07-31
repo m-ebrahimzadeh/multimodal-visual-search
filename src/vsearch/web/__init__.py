@@ -1,6 +1,13 @@
-"""Static-bundle export for the Cloudflare Worker demo."""
+"""Static-bundle export and deployment verification for the web demo."""
 
 from vsearch.web.export import DEFAULT_EXAMPLES, WebBundle, export_bundle
-from vsearch.web.parity import Parity, measure_parity
+from vsearch.web.verify import Deployment, describe, verify_deployment
 
-__all__ = ["DEFAULT_EXAMPLES", "Parity", "WebBundle", "export_bundle", "measure_parity"]
+__all__ = [
+    "DEFAULT_EXAMPLES",
+    "Deployment",
+    "WebBundle",
+    "describe",
+    "export_bundle",
+    "verify_deployment",
+]

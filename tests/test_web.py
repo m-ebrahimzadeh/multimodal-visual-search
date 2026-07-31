@@ -1,10 +1,11 @@
-"""Static-bundle export tests.
+"""Static-bundle export and deployment-verification tests.
 
 The bundle's whole reason to exist is that the deployed demo ranks by the same
 vectors the evaluation tables were measured on. So the central test here is not
 that the files appear -- it is that scoring the exported bytes reproduces
 FAISS's ranking exactly. Everything else guards a way that guarantee can be
-quietly lost: a byte order, a row order, a NaN that makes the JSON unparseable.
+quietly lost: a byte order, a row order, a NaN that makes the JSON unparseable,
+a deployment left serving an older export.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ import pytest
 
 from vsearch.encoders.base import l2_normalize
 from vsearch.index import FaissStore
-from vsearch.web import DEFAULT_EXAMPLES, export_bundle
+from vsearch.web import DEFAULT_EXAMPLES, export_bundle, verify_deployment
 from vsearch.web.export import (
     ATTRIBUTION_FILENAME,
     CORPUS_FILENAME,
@@ -264,10 +265,12 @@ def test_examples_are_omitted_without_an_encoder(tmp_path: Path) -> None:
 
 
 def test_example_vectors_are_usable_for_ranking(tmp_path: Path) -> None:
-    """A precomputed vector must rank identically to the same vector re-sent.
+    """A precomputed vector must rank identically to the same vector re-encoded.
 
-    This is the offline fallback: if these disagree, the demo would silently
-    return different results when the Worker is unreachable.
+    These are the demo's instant path and its parity ground truth. If they
+    disagree with the index, the page answers example queries with one ranking
+    and free text with another, and measures the encoder against the wrong
+    baseline.
     """
     run_dir, store, _ = _run_dir(tmp_path, n=20)
     export_bundle(run_dir, tmp_path / "out", encoder=_StubEncoder())  # type: ignore[arg-type]
@@ -281,3 +284,110 @@ def test_example_vectors_are_usable_for_ranking(tmp_path: Path) -> None:
         assert [ids[i] for i in np.argsort(-(matrix @ query[0]))[:3]] == [
             hit.id for hit in store.search(query, k=3)[0]
         ]
+
+
+# --- deployment verification -----------------------------------------------
+#
+# `verify_deployment` fetches over HTTP. These stub the fetch with a reader over
+# a real exported bundle on disk, so what gets verified is the actual file
+# format rather than a hand-built fixture that could drift from the exporter.
+
+
+def _serve(bundle: Path, monkeypatch: pytest.MonkeyPatch, *, corrupt: object = None) -> None:
+    """Point `verify_deployment`'s fetch at a local bundle directory."""
+    from vsearch.web import verify
+
+    def fake_fetch(url: str) -> bytes:
+        name = url.rsplit("/", 1)[-1]
+        if corrupt is not None and name == corrupt[0]:  # type: ignore[index]
+            return corrupt[1]  # type: ignore[index]
+        return (bundle / name).read_bytes()
+
+    monkeypatch.setattr(verify, "_fetch", fake_fetch)
+
+
+def test_a_faithful_deployment_verifies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir, _, _ = _run_dir(tmp_path, n=24)
+    export_bundle(run_dir, tmp_path / "out", encoder=None)
+    _serve(tmp_path / "out", monkeypatch)
+
+    deployment = verify_deployment("https://example.invalid", run_dir, probes=5)
+
+    assert deployment.ok
+    assert deployment.identical
+    assert deployment.ids_match
+    assert deployment.max_abs_difference == 0.0
+    assert deployment.mismatches == 0
+
+
+def test_stale_vectors_are_caught(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A deployment left serving an older export still parses and still ranks.
+
+    This is the failure the command exists for: nothing about it is visible on
+    the page, which renders a plausible grid of the wrong results.
+    """
+    run_dir, _, _ = _run_dir(tmp_path, n=16)
+    export_bundle(run_dir, tmp_path / "out", encoder=None)
+
+    stale = l2_normalize(np.random.default_rng(99).normal(size=(16, DIM)))
+    _serve(
+        tmp_path / "out",
+        monkeypatch,
+        corrupt=(EMBEDDINGS_FILENAME, stale.astype("<f4").tobytes()),
+    )
+
+    deployment = verify_deployment("https://example.invalid", run_dir, probes=5)
+
+    assert not deployment.ok
+    assert not deployment.identical
+    assert deployment.max_abs_difference > 0
+    assert deployment.mismatches == 5
+
+
+def test_reordered_ids_are_caught(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Row order is the join key, so an id list out of index order is fatal."""
+    run_dir, _, _ = _run_dir(tmp_path, n=8)
+    export_bundle(run_dir, tmp_path / "out", encoder=None)
+
+    corpus = json.loads((tmp_path / "out" / CORPUS_FILENAME).read_text(encoding="utf-8"))
+    corpus["items"].reverse()
+    _serve(
+        tmp_path / "out",
+        monkeypatch,
+        corrupt=(CORPUS_FILENAME, json.dumps(corpus).encode("utf-8")),
+    )
+
+    deployment = verify_deployment("https://example.invalid", run_dir, probes=3)
+
+    assert not deployment.ids_match
+    assert not deployment.ok
+
+
+def test_a_truncated_upload_is_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Half an embeddings.bin would otherwise reshape into a silently wrong index."""
+    run_dir, _, _ = _run_dir(tmp_path, n=10)
+    export_bundle(run_dir, tmp_path / "out", encoder=None)
+    truncated = (tmp_path / "out" / EMBEDDINGS_FILENAME).read_bytes()[: 5 * DIM * 4]
+    _serve(tmp_path / "out", monkeypatch, corrupt=(EMBEDDINGS_FILENAME, truncated))
+
+    with pytest.raises(RuntimeError, match="bytes but"):
+        verify_deployment("https://example.invalid", run_dir)
+
+
+def test_a_deployment_of_a_different_run_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Comparing against the wrong run directory must say so, not crash."""
+    deployed, _, _ = _run_dir(tmp_path / "a", n=12)
+    export_bundle(deployed, tmp_path / "out", encoder=None)
+    other, _, _ = _run_dir(tmp_path / "b", n=20)
+    _serve(tmp_path / "out", monkeypatch)
+
+    with pytest.raises(RuntimeError, match="re-export and redeploy"):
+        verify_deployment("https://example.invalid", other)
+
+
+def test_a_non_http_url_is_rejected(tmp_path: Path) -> None:
+    run_dir, _, _ = _run_dir(tmp_path, n=4)
+    with pytest.raises(ValueError, match="http"):
+        verify_deployment("file:///etc/passwd", run_dir)

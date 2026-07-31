@@ -171,7 +171,7 @@ def export_web(
         bool, typer.Option(help="Do not embed example queries (skips loading the encoder).")
     ] = False,
 ) -> None:
-    """Export a built index as static assets for the Cloudflare Worker demo.
+    """Export a built index as the static assets the web demo searches.
 
     Writes the index's own float32 block rather than rebuilding one, so the
     deployed demo ranks by the same vectors the evaluation tables report on.
@@ -209,31 +209,40 @@ def export_web(
 
 @app.command()
 def verify_web(
-    url: Annotated[str, typer.Argument(help="Base URL of the deployed Worker.")],
-    bundle: Annotated[
-        Path | None, typer.Option(help="Bundle directory holding examples.json.")
-    ] = None,
+    url: Annotated[str, typer.Argument(help="Base URL of the deployment.")],
+    corpus: Annotated[str, typer.Option(help="Corpus of the run that was deployed.")] = "fashion",
+    encoder: Annotated[str, typer.Option(help="Encoder of the run that was deployed.")] = "clip",
+    probes: Annotated[int, typer.Option(help="Random queries to rank both ways.")] = 25,
 ) -> None:
-    """Measure the deployed Worker's query embeddings against the local ones.
+    """Check that a deployment ranks by the index the metrics were measured on.
 
-    The demo assumes Workers AI's CLIP is interchangeable with the PyTorch fp32
-    encoder the index was built from. This is that assumption, measured.
+    Fetches what the deployment actually serves and scores it against the local
+    FAISS index. A stale or partial upload does not fail loudly on its own --
+    the page still renders a ranked grid, just of something else.
     """
-    from vsearch.web import measure_parity
+    from vsearch.web import describe, verify_deployment
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    parity = measure_parity(url, bundle or Path("web/public/data"))
+    settings = get_settings()
+    run_dir = settings.artifacts_dir / f"{corpus}__{encoder}"
+    if not (run_dir / "index").exists():
+        console.print(f"[red]No index at {run_dir / 'index'}.[/] Nothing to compare against.")
+        raise typer.Exit(code=1)
 
-    table = Table(title=f"query-embedding parity vs {url}", show_header=True)
-    table.add_column("query", overflow="fold")
-    table.add_column("cosine", justify="right")
-    for text, cosine in zip(parity.texts, parity.cosines, strict=True):
-        table.add_row(text, f"{cosine:.4f}")
+    deployment = verify_deployment(url, run_dir, probes=probes)
+
+    table = Table(title=f"{url} vs {run_dir.name}", show_header=True)
+    table.add_column("check")
+    table.add_column("result", overflow="fold")
+    for label, value in describe(deployment):
+        table.add_row(label, value)
     console.print(table)
-    console.print(
-        f"[bold]mean[/] {parity.mean:.4f}  [bold]worst[/] {parity.worst:.4f} "
-        f"({parity.worst_query()!r})"
-    )
+
+    if deployment.ok:
+        console.print("[bold green]Match[/] — the deployment serves the index's own vectors.")
+        return
+    console.print("[bold red]Mismatch[/] — re-run `vsearch export-web` and redeploy.")
+    raise typer.Exit(code=1)
 
 
 def _corpus_source(corpus: str) -> str | None:

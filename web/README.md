@@ -1,12 +1,57 @@
-# Live demo — Cloudflare Worker
+# Live demo — static page on Cloudflare
 
-A static page that searches the product corpus by natural language, with a Worker doing exactly one
-thing: turning the query string into a vector.
+A search page with no backend. Ranking, facet filtering, top-k **and the query encoder** all run in
+the visitor's tab; Cloudflare serves files.
 
-Everything else — ranking, facet filtering, top-k — runs in the visitor's tab against
-`public/data/embeddings.bin`, the float32 block written straight out of `index.faiss`. That is the
-point of the split: the deployed demo scores the same bytes the README's metrics were measured on,
-and changing a filter costs no network round trip.
+`public/data/embeddings.bin` is the float32 block written straight out of `index.faiss`, so the
+deployed demo scores the same bytes the README's metrics were measured on, and changing a filter
+costs no network round trip.
+
+## Why there is no Worker
+
+The first version of this ran a Worker whose only job was `POST /api/embed` → Workers AI
+`@cf/openai/clip-vit-base-patch32`. That model does not exist. Workers AI's catalogue has no CLIP
+model at all, and its text-embedding models cannot stand in: they embed into their own space with no
+geometric relationship to CLIP's joint image-text one, and their dimensions (384/768/1024) are not
+even 512.
+
+The remaining hosted option, the Hugging Face Inference API, works but costs a token that has to be
+stored as a secret and rotated, plus a quota and a third-party dependency on a page whose whole job
+is to still work in a year. It also has a failure mode worth naming: CLIP ViT-B/32's `pooler_output`
+and `text_embeds` are *both* 512-d, so a wrong-space vector would pass a dimension check silently.
+
+So the text tower ships to the client instead. With the encoder there and the index already a static
+float32 block, nothing is left to execute server-side, and `wrangler.jsonc` has no `main`.
+
+## What that costs
+
+The in-browser tower is `Xenova/clip-vit-base-patch32` at int8 — a ~62 MB one-time download, fetched
+only when someone types free text, then cached by the browser. Most of that is not the transformer:
+CLIP's token embedding table is 49,408 × 512, a third of the text tower on its own, and it does not
+quantise away.
+
+int8 is not a free win, and this project's benchmark table already says so — it measures its own
+ONNX int8 CLIP *text* export at 0.8830 parity against fp32. The deployed encoder is a different
+export, so the page measures it rather than inheriting that number. Measured on a laptop:
+
+| | |
+|---|---|
+| mean cosine vs fp32 | **0.9336** |
+| worst | 0.8950 |
+| top-1 agreement | 5/6 |
+| mean top-10 overlap | 7.8/10 |
+
+Two mitigations, both structural rather than cosmetic:
+
+- **The example chips are exact.** Their vectors are fp32, encoded at export time by the same
+  PyTorch encoder that built the index. So the showcased results have no quantization error, and
+  they answer instantly — before the encoder has been fetched at all.
+- **The page reports its own number.** After the first free-text query it re-encodes those same
+  example strings and prints the cosine against the stored fp32 vectors, in the footer. The gap is
+  measured on the visitor's machine, not asserted from this file.
+
+`fp16` and `q4f16` would be closer, but both fail to create an ONNX Runtime session on the WASM
+backend (a layer-norm fusion refers to a tensor the graph does not contain). `fp32` is 242 MB.
 
 ## Deploying
 
@@ -23,51 +68,42 @@ Then:
 npx wrangler login && npx wrangler deploy
 ```
 
-`wrangler deploy` uploads `public/` as static assets and `worker/index.ts` as the Worker, and prints
-the `*.workers.dev` URL. Workers AI needs no separate setup — the `ai` binding in `wrangler.jsonc`
-provisions it.
+`wrangler deploy` uploads `public/` and prints the `*.workers.dev` URL. There is nothing to
+configure: no bindings, no secrets, no AI quota.
 
 ## Checking it works
 
 ```bash
-uv run vsearch verify-web https://<your-worker>.workers.dev
+uv run vsearch verify-web https://<your-deployment>.workers.dev
 ```
 
-This sends the example queries to the deployment and reports the cosine between its embeddings and
-the local PyTorch fp32 ones. The claim it tests is that Workers AI's
-`@cf/openai/clip-vit-base-patch32` is interchangeable with the checkpoint the index was built from.
-Same name is a good reason to expect that; it is not a measurement of it.
+This fetches what the deployment actually serves and scores it against the local FAISS index —
+byte-for-byte, then by ranking random probe vectors both ways. The failure it exists to catch is a
+stale or half-finished upload, which does not announce itself: the page still renders a plausible
+ranked grid, just of the wrong results.
 
-For reference, this project measured ONNX int8 CLIP *text* parity at **0.8830** against the same
-baseline — the weakest number in its benchmark table, and the reason the query encoder runs on
-Workers AI rather than as a quantized model in the browser.
+The other claim — that the in-browser encoder shares the index's vector space — is measured in the
+page itself, because it is a property of the visitor's browser rather than of the deployment.
 
 ## Local development
 
-`wrangler dev` runs the Worker locally and proxies the AI binding to Cloudflare, so free-text search
-works against the real model:
-
-```bash
-npx wrangler dev
-```
-
-Without a Cloudflare account, any static server exercises everything except free-text queries:
+Any static server exercises the whole thing, encoder included:
 
 ```bash
 python -m http.server 8788 --directory public
 ```
 
-The example chips still work there — they carry precomputed vectors — and free text surfaces the
-"embedding unavailable" notice. That is the same path a visitor gets if the AI quota is spent, so
-it is worth seeing deliberately rather than discovering in production.
+To see the degraded path deliberately, block `cdn.jsdelivr.net` in devtools and search: the example
+chips still work, and free text surfaces a notice instead of an empty page. That is what a visitor
+gets on a restricted network, so it is worth seeing on purpose rather than discovering in production.
 
 ## Layout
 
 ```
-wrangler.jsonc      Worker config: static assets + AI binding
-worker/index.ts     POST /api/embed -> 512-d unit vector; GET /api/health
+wrangler.jsonc      static assets only -- no `main`, no bindings
 public/index.html   markup
-public/app.js       loading, ranking, filtering, rendering
+public/app.js       loading, ranking, filtering, rendering, parity measurement
+public/encoder.js   lazily-loaded CLIP text tower
 public/styles.css   light/dark, follows the visitor's system theme
 public/data/        generated by `vsearch export-web` (gitignored)
 ```
