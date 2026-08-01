@@ -99,6 +99,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Wrangler declares `node >=22`, and the runner's default is drifting --
+      # the image is mid-migration from 20 to 24. Pinning it is what makes the
+      # install below a property of this file rather than of the image.
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # This is the step that fixes the deploy, and it fixes it indirectly.
+      # `wrangler-action` probes `npx --no-install wrangler --version` and only
+      # installs Wrangler when that probe fails -- and it was that install
+      # which exited 1 and took the whole job with it. Installing from the
+      # committed lockfile first makes the probe succeed, so the action adopts
+      # this Wrangler, at the version the lockfile pins, and never reaches its
+      # own install path.
+      - name: Install Wrangler
+        working-directory: web
+        run: npm ci
+
       # Before the upload, not after. An assets deploy replaces the *entire*
       # manifest, so by the time a bad bundle is live the good one it replaced
       # is already gone -- and the failure is silent, because a page with no
