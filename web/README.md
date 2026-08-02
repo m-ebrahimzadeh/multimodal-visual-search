@@ -7,7 +7,7 @@ the visitor's tab; Cloudflare serves files.
 deployed demo scores the same bytes the README's metrics were measured on, and changing a filter
 costs no network round trip.
 
-## Why there is no Worker
+## Why the Worker does not run a model
 
 The first version of this ran a Worker whose only job was `POST /api/embed` → Workers AI
 `@cf/openai/clip-vit-base-patch32`. That model does not exist. Workers AI's catalogue has no CLIP
@@ -20,8 +20,36 @@ stored as a secret and rotated, plus a quota and a third-party dependency on a p
 is to still work in a year. It also has a failure mode worth naming: CLIP ViT-B/32's `pooler_output`
 and `text_embeds` are *both* 512-d, so a wrong-space vector would pass a dimension check silently.
 
-So the text tower ships to the client instead. With the encoder there and the index already a static
-float32 block, nothing is left to execute server-side, and `wrangler.jsonc` has no `main`.
+So the text tower ships to the client instead, and nothing is evaluated server-side. There is a
+`main` in `wrangler.jsonc` again, but it is not a step back towards any of that:
+[`src/index.js`](src/index.js) reads bytes out of R2 and decides nothing. No token, no quota, no
+model in the request path.
+
+It exists because of a number. `onnx/text_model_quantized.onnx` is 61.5 MB and a Cloudflare static
+asset is capped at **25 MiB on every plan**, so the weights cannot live in `public/` however much
+tidier that would be.
+
+## Why the weights are served from here
+
+They used to come straight from `huggingface.co`, which is where they are published and where
+transformers.js looks by default. On a corporate network that is a dead demo: the page loads, the
+runtime loads from a CDN, and then the one request that matters is refused — the host answers, but
+the browser is not handed the response. Everything a visitor came to try is the part that breaks,
+and the rest of the page works well enough to make it look like the demo's fault.
+
+That network is not fixable from here, and diagnosing it more precisely does not help someone who
+only wanted to type a query. Serving the weights from this origin removes the question instead:
+there is no second host to block, so anything that can reach the demo can reach its encoder.
+
+Two consequences worth stating plainly:
+
+- **`allowRemoteModels` is off.** At its default, an object missing from the bucket falls back to
+  `huggingface.co` and succeeds — for everyone except the visitors this change exists for, whose
+  network is precisely what blocks that host. The bug would pass every test that can be run here and
+  be live only for the people it was meant to fix. With it off, a gap fails everywhere, loudly, and
+  CI checks for one after each deploy.
+- **The weights are the one part of the deploy not reproducible from a checkout.** They are 62 MB in
+  a bucket, uploaded once by hand. `wrangler deploy` neither reads nor writes them.
 
 ## What that costs
 
@@ -66,8 +94,29 @@ It needs two repository secrets, once:
 | `CLOUDFLARE_API_TOKEN` | dash.cloudflare.com → My Profile → API Tokens → **Edit Cloudflare Workers** template, scoped to this account |
 | `CLOUDFLARE_ACCOUNT_ID` | dash.cloudflare.com → Workers & Pages → Account ID in the sidebar |
 
-Nothing else is configured: no bindings, no runtime secrets, no AI quota. The token is the only
-credential in the system, and it exists because CI uploads rather than because the page needs it.
+There are no runtime secrets and no AI quota. The token is the only credential in the system, and it
+exists because CI uploads rather than because the page needs it.
+
+### The bucket, once
+
+The encoder's weights are not in this repo and CI does not upload them. Create the bucket and fill
+it once, from a machine where `wrangler login` has been run:
+
+```bash
+cd web
+npx wrangler r2 bucket create multimodal-visual-search-models
+npm run models:pull     # Hugging Face -> ./models  (gitignored, ~64 MB)
+npm run models:push     # ./models     -> the bucket
+```
+
+[`scripts/models.mjs`](scripts/models.mjs) holds the file list, and holds it in one place on
+purpose: `allowRemoteModels` is off in the browser, so a file missing from the bucket is free-text
+search broken rather than a silent fetch from the Hub. The list is exactly what
+`CLIPTextModelWithProjection` and `AutoTokenizer` request at `q8` — the repo also carries a vision
+tower and seven other quantisations of the text one, about 2.5 GB this demo never touches.
+
+The deploy token needs no R2 permission. The objects never change: the model is pinned by name, so a
+different export would be a different key.
 
 ### Why the lockfile is committed
 
@@ -143,34 +192,49 @@ page itself, because it is a property of the visitor's browser rather than of th
 
 ## Local development
 
-Any static server exercises the whole thing, encoder included:
+`wrangler dev` serves the page and the weights together, which is the only way to exercise the whole
+thing:
+
+```bash
+cd web && npm install && npm run models:pull && npm run models:push:local && npm run dev
+```
+
+`models:push:local` puts the files in Wrangler's local R2 emulation rather than the real bucket.
+Both model steps are one-time.
+
+A plain static server still renders the page, browses the corpus and answers the example chips:
 
 ```bash
 python -m http.server 8788 --directory public
 ```
 
-To see the degraded path deliberately, block `cdn.jsdelivr.net` or `huggingface.co` in devtools and
-search: the example chips still work, and free text surfaces a notice instead of an empty page. That
-is what a visitor gets on a restricted network, so it is worth seeing on purpose rather than
-discovering in production.
+Free text will not work there, and it should not: nothing serves `/models/`, so the encoder 404s.
+That is worth seeing on purpose — it is exactly what a deployment with an empty bucket does, and the
+notice it produces is the one a visitor would get.
 
-The notice names the actual cause, because the library does not. A blocked download reaches the
-loader as a null dereference — `Cannot read properties of undefined (reading 'tokenizer_class')` —
-which reads like a bug in this page. So on failure the encoder probes the host twice, `no-cors` then
-`cors`, and distinguishes "could not reach `huggingface.co`" from "reachable, but this browser would
-not let the page read the response", which is what a filtering proxy or a blocking extension looks
-like from inside the tab.
+The notice names the cause, because the library does not. A failed load reaches the loader as a null
+dereference — `Cannot read properties of undefined (reading 'tokenizer_class')` — which reads like a
+bug in this page rather than a file that did not arrive. So on failure the encoder re-requests the
+model's `config.json` and reports the status.
+
+That check used to be much larger. While the weights came from `huggingface.co` it had to separate
+"unreachable" from "reached, but this browser would not hand the page the bytes" — a CORS-layer
+refusal that a single request cannot distinguish, needing two probes in different modes. Same-origin
+there is no such layer, and the reasoning collapsed into a status code.
 
 ## Layout
 
 ```
-wrangler.jsonc      static assets only -- no `main`, no bindings
+wrangler.jsonc      assets + an R2 binding; see "Why the Worker does not run a model"
 package-lock.json   pins Wrangler for CI; see "Why the lockfile is committed"
+src/index.js        the Worker: reads /models/* out of R2, delegates everything else
+scripts/models.mjs  one-time, by hand: the Hub -> ./models -> the bucket
 public/index.html   markup
 public/app.js       loading, ranking, filtering, rendering, parity measurement
-public/encoder.js   lazily-loaded CLIP text tower
+public/encoder.js   lazily-loaded CLIP text tower, fetched from this origin
 public/styles.css   light/dark, follows the visitor's system theme
 public/data/        generated by `vsearch export-web` -- committed, so CI can deploy it
+models/             gitignored staging for the weights; never deployed, never committed
 ```
 
 Outside this directory:

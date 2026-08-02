@@ -28,6 +28,12 @@ results/**/*.onnx
 # --- Web demo ---
 node_modules/
 .wrangler/
+# A staging area for the encoder weights on their way into R2, not part of the
+# deploy. 62 MB of it is one file, which is both over GitHub's warning
+# threshold and 2.5x Cloudflare's per-asset cap -- the reason the weights are in
+# a bucket rather than in `public/` at all. `web/README.md` documents the pull
+# and the push; both are one-time, because the model is pinned by name.
+web/models/
 # The exported bundle IS committed. It is generated (`vsearch export-web`) and
 # it does redistribute third-party dataset thumbnails, which is why it used to
 # be ignored -- but CI deploys from a checkout, and a Workers assets deploy

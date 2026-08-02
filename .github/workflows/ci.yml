@@ -187,6 +187,24 @@ jobs:
             status=1
           fi
 
+          # The encoder's weights are in R2, not in this checkout, so nothing
+          # earlier in this job can have proved they are there. They have to be
+          # checked from outside for the same reason the bundle does -- and more
+          # so, because the page sets `allowRemoteModels = false`, so a missing
+          # object cannot quietly fall back to huggingface.co. An empty or
+          # unbound bucket is free-text search dead in production, reported by
+          # a green deploy. One byte each is enough to prove they are served.
+          model=models/Xenova/clip-vit-base-patch32
+          for key in config.json tokenizer.json tokenizer_config.json \
+                     onnx/text_model_quantized.onnx; do
+            if curl -fsS --max-time 60 -r 0-0 -o /dev/null "$url/$model/$key"; then
+              echo "  $key served from R2"
+            else
+              echo "::error::$url/$model/$key is not served; the R2 bucket is empty or unbound"
+              status=1
+            fi
+          done
+
           exit $status
 
       - name: Summarise

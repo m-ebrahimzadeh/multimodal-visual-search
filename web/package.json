@@ -4,7 +4,10 @@
   "description": "Static CLIP retrieval demo deployed to Cloudflare",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "models:pull": "node scripts/models.mjs pull",
+    "models:push": "node scripts/models.mjs push",
+    "models:push:local": "node scripts/models.mjs push --local"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

@@ -3,15 +3,35 @@
   "name": "multimodal-visual-search",
   "compatibility_date": "2026-07-31",
 
-  // No `main`, and that is the point. An earlier revision ran a Worker whose
-  // only job was POST /api/embed -> Workers AI CLIP; Workers AI turned out to
-  // have no CLIP model in its catalogue, so the text tower moved into the
-  // browser. With the encoder there and the index already a static float32
-  // block, nothing is left to execute server-side. This deploys `public/` and
-  // stops.
+  // There is a `main` again, and it is worth being precise about what changed.
+  // An earlier revision ran a Worker that called Workers AI for embeddings --
+  // a model that does not exist -- and removing it was right: no inference
+  // happens server-side and none will. `src/index.js` reads bytes out of R2.
+  //
+  // It is here because the encoder's weights are 61.5 MB in one file and a
+  // Cloudflare static asset is capped at 25 MiB on every plan, so they cannot
+  // live in `public/`. Leaving them on huggingface.co was the alternative, and
+  // that is what broke: a network between the visitor and this page can refuse
+  // a cross-origin fetch, and one does. Same-origin, there is no second host to
+  // block.
+  "main": "src/index.js",
+
   "assets": {
-    "directory": "./public"
+    "directory": "./public",
+    // Bound so the Worker can hand back anything that is not a model file and
+    // get the asset handler's own 404 rather than inventing one.
+    "binding": "ASSETS"
   },
+
+  // Read-only at runtime. Populated once by hand -- see web/README.md -- because
+  // the model is pinned by name, so the objects never change and CI has no
+  // reason to hold a token that could write to them.
+  "r2_buckets": [
+    {
+      "binding": "MODELS",
+      "bucket_name": "multimodal-visual-search-models"
+    }
+  ],
 
   "observability": {
     "enabled": true
