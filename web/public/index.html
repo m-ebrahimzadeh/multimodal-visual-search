@@ -45,16 +45,18 @@
           <button type="submit" id="submit">Search</button>
         </form>
 
-        <div class="examples" id="examples" aria-label="Example queries">
-          <span class="examples-label">Try:</span>
-        </div>
-
         <div class="progress" id="progress" hidden>
           <p class="progress-label" id="progress-label"></p>
           <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
         </div>
 
-        <p class="notice" id="notice" hidden></p>
+        <!-- Above the chips on purpose: this is where the page sends a visitor
+             whose encoder did not load, and it used to sit underneath them. -->
+        <p class="notice" id="notice" role="status" hidden></p>
+
+        <div class="examples" id="examples" aria-label="Example queries">
+          <span class="examples-label">Try:</span>
+        </div>
       </section>
 
       <section class="controls" aria-label="Filters">
@@ -95,9 +97,13 @@
       </p>
       <p class="parity" id="parity" hidden></p>
       <p class="links">
-        <a href="https://github.com/m-ebrahimzadeh/CV">Source &amp; measured Recall@k</a>
+        <a href="https://github.com/m-ebrahimzadeh/multimodal-visual-search"
+          >Source &amp; measured Recall@k</a
+        >
         <span aria-hidden="true">·</span>
-        <a href="https://github.com/m-ebrahimzadeh/CV#limitations">Limitations</a>
+        <a href="https://github.com/m-ebrahimzadeh/multimodal-visual-search#limitations"
+          >Limitations</a
+        >
       </p>
     </footer>
 

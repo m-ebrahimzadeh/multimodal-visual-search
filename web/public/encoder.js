@@ -39,6 +39,24 @@ const DTYPE = "q8";
 
 export const ENCODER = { library: LIBRARY, model: MODEL, dtype: DTYPE };
 
+/**
+ * The encoder could not be fetched or started.
+ *
+ * Distinct from a failure to *run* it, which callers must not report as a
+ * download problem: a dimension mismatch is a broken pin, not a blocked
+ * network, and telling a visitor to check their connection would send them
+ * looking in the wrong place.
+ *
+ * `message` is a bare clause, lowercase and unpunctuated, so the caller can
+ * compose it into a sentence without ending up with two clause joins in one.
+ */
+export class EncoderUnavailable extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "EncoderUnavailable";
+  }
+}
+
 /** In-flight or settled load. One per page; the weights are fetched once. */
 let pending = null;
 /** Set after the first successful encode, so callers can skip the progress UI. */
@@ -56,13 +74,13 @@ function acquire(onProgress) {
 
   pending = (async () => {
     const library = await import(LIBRARY).catch(() => {
-      throw new Error(`could not load the runtime from ${host(LIBRARY)}`);
+      throw new EncoderUnavailable(`the runtime did not load from ${host(LIBRARY)}`);
     });
     const { AutoTokenizer, CLIPTextModelWithProjection, env } = library;
 
-    // The page is served from this origin, the weights are not. Left on, every
-    // `from_pretrained` probes `/models/...` here and 404s before falling back
-    // to the Hub.
+    // The page is served from this origin, the weights are not. This is already
+    // the default in a browser -- the library derives it from the environment --
+    // and is pinned here so the assumption is visible at the point it matters.
     env.allowLocalModels = false;
 
     try {
@@ -81,7 +99,7 @@ function acquire(onProgress) {
       // out is "Cannot read properties of undefined (reading 'tokenizer_class')".
       // That reads like a bug in this page rather than a request the network
       // refused, so `explain` goes and finds out which it was.
-      throw new Error(await explain(env.remoteHost, cause));
+      throw new EncoderUnavailable(await explain(env.remoteHost, cause));
     }
   })();
 
@@ -137,6 +155,13 @@ function host(url) {
  * The probe is the model's own `config.json` rather than the host root: the
  * root is an HTML page that sends no `Access-Control-Allow-Origin`, so a cors
  * probe against it fails on a *healthy* network and would blame one wrongly.
+ *
+ * Each branch returns what was *observed*, not what is responsible for it. An
+ * earlier version blamed "a proxy or an extension blocking cross-origin reads",
+ * which the evidence does not support: on the network where this fires, the
+ * cross-origin import of the runtime from a CDN succeeds on the same page. Only
+ * this host is affected, and from inside the tab there is no way to see what is
+ * doing it. Naming a culprit sends the reader to check the wrong thing.
  */
 async function explain(remoteHost, cause) {
   const name = host(remoteHost);
@@ -151,15 +176,12 @@ async function explain(remoteHost, cause) {
   };
 
   if (!(await reachable("no-cors"))) {
-    return `could not reach ${name} — the network refused the request`;
+    return `the network refused the connection to ${name}`;
   }
   if (!(await reachable("cors"))) {
-    return (
-      `${name} is reachable, but this browser would not let the page read the ` +
-      `response — a proxy or an extension is blocking cross-origin reads`
-    );
+    return `${name} answered, but this browser would not hand the response to the page`;
   }
-  return `could not fetch ${MODEL} from ${name}: ${cause.message}`;
+  return `${name} served ${MODEL}, but it would not load (${cause.message})`;
 }
 
 /**

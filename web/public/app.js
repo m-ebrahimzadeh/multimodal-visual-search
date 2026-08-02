@@ -16,7 +16,7 @@
  *     against ground truth, on the visitor's machine. See `measureParity`.
  */
 
-import { ENCODER, encode, isResident } from "./encoder.js";
+import { EncoderUnavailable, encode, isResident } from "./encoder.js";
 
 const DATA = "data";
 const state = {
@@ -27,6 +27,19 @@ const state = {
   /** Cached vector of the last successful query, so filters re-rank locally. */
   queryVector: null,
   queryText: "",
+  /**
+   * How `queryVector` was produced: "precomputed" for an example chip's fp32
+   * vector, "encoded" for one this tab's int8 tower made.
+   *
+   * On state rather than passed into the renderer, because re-ranks are the
+   * case that gets it wrong. Changing a facet re-renders without re-encoding,
+   * so any provenance inferred from that call's timings reports "precomputed"
+   * for a vector the encoder had just produced -- on a page whose whole claim
+   * is that it measures its own quantization error.
+   */
+  querySource: null,
+  /** What the encoder cost, when it was involved. */
+  embedMs: 0,
 };
 
 const el = (id) => document.getElementById(id);
@@ -34,15 +47,27 @@ const FACET_FIELDS = ["articleType", "baseColour", "gender"];
 
 /* -- Loading -------------------------------------------------------------- */
 
+/**
+ * Fetch one file of the bundle, failing on the status rather than on the body.
+ *
+ * A missing file is not a network error and does not reject: the host answers
+ * 404 with an HTML page, `r.json()` then chokes on the leading `<`, and the
+ * visitor is told `Unexpected token '<'` -- which names the symptom and buries
+ * the cause. Checking `ok` first means the message names the file.
+ */
+async function bundleFile(name, read) {
+  const response = await fetch(`${DATA}/${name}`);
+  if (!response.ok) throw new Error(`${DATA}/${name} returned HTTP ${response.status}`);
+  return read(response);
+}
+
 async function load() {
   const [corpus, buffer, examples] = await Promise.all([
-    fetch(`${DATA}/corpus.json`).then((r) => r.json()),
-    fetch(`${DATA}/embeddings.bin`).then((r) => r.arrayBuffer()),
-    fetch(`${DATA}/examples.json`)
-      .then((r) => r.json())
-      // Examples are a convenience, not a dependency; a bundle exported with
-      // --skip-examples has no such file and the page is still usable.
-      .catch(() => ({ examples: [] })),
+    bundleFile("corpus.json", (r) => r.json()),
+    bundleFile("embeddings.bin", (r) => r.arrayBuffer()),
+    // Examples are a convenience, not a dependency; a bundle exported with
+    // --skip-examples has no such file and the page is still usable.
+    bundleFile("examples.json", (r) => r.json()).catch(() => ({ examples: [] })),
   ]);
 
   state.corpus = corpus;
@@ -132,7 +157,14 @@ function topK(query, rows, k) {
 
 /** Embed free text here in the tab, fetching the weights the first time. */
 async function embedLocally(text) {
-  const [vector] = await encode([text], isResident() ? undefined : reportProgress);
+  // A retry after a part-finished download restarts the accounting. The byte
+  // counters are cumulative across files, so leaving the abandoned attempt's
+  // entries in place inflates the denominator and the bar opens partway along
+  // a download that has not begun.
+  const downloading = !isResident();
+  if (downloading) downloads.clear();
+
+  const [vector] = await encode([text], downloading ? reportProgress : undefined);
   if (vector.length !== state.corpus.dim) {
     // Cannot happen with the pinned model, and is worth catching loudly if the
     // pin is ever changed: a 768-d query silently scored against a 512-d index
@@ -158,18 +190,54 @@ async function run(text, precomputed = null) {
 
     state.queryVector = vector;
     state.queryText = text;
-    rankAndRender(embedMs);
+    state.querySource = precomputed ? "precomputed" : "encoded";
+    state.embedMs = embedMs;
+    rankAndRender();
     if (!precomputed) void measureParity();
   } catch (error) {
-    notice(
-      `Free-text search needs a one-time download of the CLIP text encoder, and this ` +
-        `browser or network could not complete it — ${error.message}. ` +
-        `The example queries below still work: their vectors ship with the page.`
-    );
+    notice(describeFailure(text, error));
+    markResultsStale(text);
   } finally {
     progress(null);
     button.disabled = false;
   }
+}
+
+/**
+ * One sentence for a query that could not be answered.
+ *
+ * Split on the cause, because the two want different words. Only an
+ * `EncoderUnavailable` is about the download; a dimension mismatch means the
+ * model pin changed, and sending that visitor to check their network points
+ * them at the one part that is working.
+ *
+ * The bare clause arrives from `EncoderUnavailable` and the sentence is built
+ * here, in one place. Interpolating a finished sentence into another is what
+ * put two em-dashes in one breath in the released version.
+ */
+function describeFailure(text, error) {
+  if (!(error instanceof EncoderUnavailable)) {
+    return `Could not answer “${text}”: ${error.message}.`;
+  }
+  return (
+    `Free-text search needs a one-time download of the CLIP text encoder, and this ` +
+    `browser or network could not complete it: ${error.message}. ` +
+    `The example queries still work — their vectors ship with the page.`
+  );
+}
+
+/**
+ * Say that the grid underneath answers an older question.
+ *
+ * Without it the page puts an error about the query that just failed directly
+ * above a grid captioned with the one before it, and nothing distinguishes
+ * them. Nothing is cleared: the previous answer is still a real answer, and
+ * throwing it away to prove a point would leave the visitor with less.
+ */
+function markResultsStale(failed) {
+  if (!state.queryVector) return;
+  el("summary").textContent =
+    `“${failed}” could not be answered — the results below still answer “${state.queryText}”.`;
 }
 
 /* -- Self-measurement ----------------------------------------------------- */
@@ -219,31 +287,51 @@ async function measureParity() {
   }
 }
 
-function rankAndRender(embedMs = 0) {
+function rankAndRender() {
   const k = Number(el("topk").value);
+
+  // Two timers, because the page makes two different claims. The header stat
+  // is what answering costs: the filter pass, then the ranking. The summary's
+  // number is narrower -- the dot-product scan alone -- because that is what
+  // the sentence around it says it is. Rendering sits outside both; its cost
+  // scales with `k` rather than with the index.
+  const startedFilter = performance.now();
   const rows = allowedRows();
+  const filterMs = performance.now() - startedFilter;
+
+  const startedScan = performance.now();
+  const hits = state.queryVector
+    ? topK(state.queryVector, rows, k)
+    : // No query yet: show the head of the corpus so the grid is never empty.
+      rows.slice(0, k).map((row) => ({ row, score: null }));
+  const scanMs = performance.now() - startedScan;
+
+  // Written on every path, browsing included. Confined to the ranked path it
+  // stayed an em-dash until the first query succeeded, leaving one header stat
+  // looking broken beside three that were populated -- and on a page where the
+  // encoder can fail, "until the first success" can mean forever.
+  const answerMs = filterMs + scanMs;
+  el("stat-latency").textContent = `${answerMs < 1 ? "<1" : Math.round(answerMs)} ms`;
+  render(hits);
 
   if (!state.queryVector) {
-    // No query yet: show the head of the corpus so the grid is never empty.
-    render(rows.slice(0, k).map((row) => ({ row, score: null })));
     el("summary").textContent =
       `Browsing ${rows.length.toLocaleString()} of ${state.corpus.count.toLocaleString()} images. ` +
       `Search or pick an example to rank them.`;
     return;
   }
 
-  const started = performance.now();
-  const hits = topK(state.queryVector, rows, k);
-  const searchMs = performance.now() - started;
-
-  el("stat-latency").textContent = `${searchMs < 1 ? "<1" : Math.round(searchMs)} ms`;
-  render(hits);
-
   const scope = rows.length === state.corpus.count ? "" : ` within ${rows.length} filtered`;
-  const remote = embedMs ? `, ${Math.round(embedMs)} ms to embed` : ", vector precomputed";
+  // From state, not from an argument. A re-rank does no encoding, so a
+  // parameter defaulting to 0 made every filter change report a freshly
+  // encoded vector as precomputed.
+  const provenance =
+    state.querySource === "encoded"
+      ? `, ${Math.round(state.embedMs)} ms to embed`
+      : ", vector precomputed";
   el("summary").textContent =
     `Top ${hits.length} for “${state.queryText}”${scope} — ` +
-    `${searchMs < 1 ? "<1" : searchMs.toFixed(1)} ms to scan ${rows.length.toLocaleString()} vectors${remote}.`;
+    `${scanMs < 1 ? "<1" : scanMs.toFixed(1)} ms to scan ${rows.length.toLocaleString()} vectors${provenance}.`;
 }
 
 /* -- Rendering ------------------------------------------------------------ */
@@ -253,7 +341,11 @@ function render(hits) {
   list.replaceChildren();
 
   if (hits.length === 0) {
-    const empty = document.createElement("p");
+    // `li`, not `p`. The host is an `ol`, whose only permitted children are
+    // `li`, `script` and `template`. A `p` rendered anyway, because `.empty`
+    // spans the grid explicitly -- but it is invalid markup, and what a screen
+    // reader announces is a list with a stray child inside it.
+    const empty = document.createElement("li");
     empty.className = "empty";
     empty.textContent = "No images match those filters.";
     list.append(empty);
@@ -342,14 +434,20 @@ for (const id of ["topk", ...FACET_FIELDS.map((f) => `facet-${f}`)]) {
   el(id)?.addEventListener("change", () => rankAndRender());
 }
 
+/** Whatever the markup marks `selected`, so Reset has no second copy of it. */
+const DEFAULT_TOPK = el("topk").value;
+
 el("reset").addEventListener("click", () => {
   for (const field of FACET_FIELDS) {
     const select = el(`facet-${field}`);
     if (select) select.value = "";
   }
+  el("topk").value = DEFAULT_TOPK;
   el("query").value = "";
   state.queryVector = null;
   state.queryText = "";
+  state.querySource = null;
+  state.embedMs = 0;
   notice(null);
   rankAndRender();
 });
