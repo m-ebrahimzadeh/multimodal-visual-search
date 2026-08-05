@@ -23,6 +23,21 @@
 
 const PREFIX = "/models/";
 
+/**
+ * Headers for every response that is not an object.
+ *
+ * A miss here is transient by nature -- an upload still in flight, a bucket
+ * filled a minute ago -- and it must not be allowed to outlive that. Shortly
+ * after the first upload this route returned 404s that cleared on their own
+ * within a few minutes, at different times for different keys, which is what a
+ * short negative cache looks like from outside.
+ *
+ * Left cacheable, that is worse than a slow start: the page runs with
+ * `allowRemoteModels = false`, so a stale 404 is free-text search broken for
+ * that visitor with nothing to fall back to, long after the bucket is correct.
+ */
+const NOT_FOUND = { "cache-control": "no-store" };
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -33,12 +48,15 @@ export default {
     if (!url.pathname.startsWith(PREFIX)) return env.ASSETS.fetch(request);
 
     if (request.method !== "GET" && request.method !== "HEAD") {
-      return new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } });
+      return new Response("Method not allowed", {
+        status: 405,
+        headers: { allow: "GET, HEAD", ...NOT_FOUND },
+      });
     }
 
     const key = decodeURIComponent(url.pathname.slice(PREFIX.length));
     if (!key || key.endsWith("/") || key.split("/").includes("..")) {
-      return new Response("Not found", { status: 404 });
+      return new Response("Not found", { status: 404, headers: NOT_FOUND });
     }
 
     // Range and conditional headers are forwarded rather than dropped. This is
@@ -54,7 +72,7 @@ export default {
       // gap here is a hard failure rather than a silent fall back to the Hub --
       // which is the point, but it means this 404 is the whole explanation
       // anyone gets.
-      return new Response(`No such object: ${key}`, { status: 404 });
+      return new Response(`No such object: ${key}`, { status: 404, headers: NOT_FOUND });
     }
 
     const headers = new Headers();
